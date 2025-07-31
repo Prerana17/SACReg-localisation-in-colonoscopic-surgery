@@ -34,20 +34,74 @@ from .heads import head_factory
 
 
 class PointEmbed(nn.Module):
-    """Placeholder φ-encoding + MLP to map 3-D points to 256-D tokens."""
+    """Point encoding module implementing the φ-encoding described in SACReg.
 
-    def __init__(self, in_dim: int = 3, embed_dim: int = 256):
+    The module takes input points (u, v, x, y, z) and:
+      1. Applies harmonic cosine/sine encoding to the xyz coordinates with
+         frequencies  f_i = f1 * gamma^(i-1)  for i = 1..F.
+      2. Concatenates the raw (u, v) coordinates giving a 38-D vector
+         (uv 2 + xyz encoding 36).
+      3. Projects the 38-D vector through a two-layer MLP to obtain a 256-D
+         token suitable for the 3D-Mixer.
+
+    No normalisation or rescaling is applied to inputs.
+    """
+
+    def __init__(
+        self,
+        f1: float = 0.017903170262351338,
+        gamma: float = 2.884031503126606,
+        F: int = 6,
+        embed_dim: int = 256,
+    ) -> None:
         super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(in_dim, embed_dim),
+        # Pre-compute and register harmonic frequencies (shape: [F])
+        freqs = torch.tensor([f1 * (gamma ** i) for i in range(F)], dtype=torch.float32)
+        self.register_buffer("frequencies", freqs)
+
+        input_dim = 2 + 3 * F * 2  # 38 when F=6
+        # Two-layer MLP 38 -> 256 -> 256 with ReLU
+        self.mlp = nn.Sequential(
+            nn.Linear(input_dim, embed_dim),
             nn.ReLU(inplace=True),
             nn.Linear(embed_dim, embed_dim),
         )
 
-    def forward(self, pts2d3d: torch.Tensor) -> torch.Tensor:  # (B,N,5)
-        # TODO: replace with φ encoding (frequency features, etc.)
-        xyz = pts2d3d[..., 2:5]  # use xyz only for now
-        return self.fc(xyz)
+    def forward(self, pts2d3d: torch.Tensor) -> torch.Tensor:
+        """Encode (u,v,x,y,z) points into 256-D tokens.
+
+        Parameters
+        ----------
+        pts2d3d : Tensor (B, N, 5)
+            Input points with columns (u, v, x, y, z).
+
+        Returns
+        -------
+        Tensor (B, N, 256)
+            Encoded point tokens.
+        """
+        B, N, _ = pts2d3d.shape
+        if N == 0:
+            # Gracefully handle empty correspondence sets.
+            return torch.empty(B, 0, self.mlp[-1].out_features, device=pts2d3d.device, dtype=pts2d3d.dtype)
+
+        uv = pts2d3d[..., 0:2]  # (B, N, 2)
+        xyz = pts2d3d[..., 2:5]  # (B, N, 3)
+
+        # Vectorised φ-encoding.
+        # Flatten xyz to (B*N*3,) then outer-product with frequencies (F,) -> (B*N*3, F)
+        xyz_flat = xyz.reshape(-1)
+        angles = torch.outer(xyz_flat, self.frequencies)  # radians
+        cos_comp = torch.cos(angles)
+        sin_comp = torch.sin(angles)
+        enc_flat = torch.cat([cos_comp, sin_comp], dim=-1)  # (B*N*3, 2F)
+        # Reshape back to (B, N, 3, 2F) then flatten last two dims -> (B, N, 6F)
+        enc_xyz = enc_flat.view(B, N, 3, -1).reshape(B, N, -1)
+
+        # Concatenate (u, v)
+        feat = torch.cat([uv, enc_xyz], dim=-1)  # (B, N, 38)
+
+        return self.mlp(feat)
 
 
 class PointLevelDecoderBlock(nn.Module):
