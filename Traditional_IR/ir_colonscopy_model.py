@@ -14,55 +14,66 @@ from sklearn.metrics.pairwise import cosine_similarity
 import pickle
 import sys
 
-# --- 1. 数据加载和三元组生成 (从 dataset.py 整合) ---
+# --- 1. Data Loading and Triplet Generation (Integrated from dataset.py) ---
 
 class ColonoscopyTripletDataset(Dataset):
     def __init__(self, root_dirs, transform=None, triplet_strategy="sequential_intra_video"): 
+        # Ensure root_dirs is a list
         self.root_dirs = root_dirs if isinstance(root_dirs, list) else [root_dirs]
         self.transform = transform
         self.triplet_strategy = triplet_strategy
         
-        self.video_folders = []  # 存储所有实际的视频序列文件夹路径
-        self.video_frames = []   # 存储所有帧的 (frame_path, unique_video_id)
-        self.video_ids = {}      # unique_video_id -> 内部数字ID
+        self.video_folders = []  # Stores paths to all actual video sequence folders
+        self.video_frames = []   # Stores (frame_path, unique_video_id) for all frames
+        self.video_ids = {}      # Maps unique_video_id to an internal numeric ID
         
-        global_video_counter = 0 
+        global_video_counter = 0 # Used to generate a globally unique ID for each video sequence
         
         for root_dir in self.root_dirs:
+            # Check if each root directory exists
             if not os.path.isdir(root_dir):
                 print(f"Warning: Training root directory not found: {root_dir}. Skipping.")
                 continue
 
+            # Collect all top-level folders within the current root_dir (e.g., cecum_t1_a or SyntheticColon_I/II/III)
             top_level_folders = sorted([d for d in glob.glob(os.path.join(root_dir, '*')) if os.path.isdir(d)])
             
             candidate_video_folders = []
             for tlf in top_level_folders:
+                # If it's a SimCol3D scene folder (e.g., SyntheticColon_I/II/III)
                 if os.path.basename(tlf).startswith('SyntheticColon_'):
+                    # Video folders are one level deeper (e.g., Frames_SXX, Frames_BXX, Frames_OXX)
                     candidate_video_folders.extend(sorted([d for d in glob.glob(os.path.join(tlf, '*')) if os.path.isdir(d)]))
                 else:
+                    # Otherwise, it's likely a C3VD video folder (e.g., cecum_t1_a, sigmoid_t2_a)
                     candidate_video_folders.append(tlf)
             
-            # --- 核心修复：将找到的视频文件夹添加到 self.video_folders ---
+            # --- Core Fix: Add found video folders to self.video_folders ---
             self.video_folders.extend(candidate_video_folders) 
             # -----------------------------------------------------------
             
+            # Now, iterate through the candidate_video_folders to get frames
             for video_folder_path in candidate_video_folders:
                 video_name_from_folder = os.path.basename(video_folder_path) 
 
+                # Create a globally unique video ID by combining root directory basename,
+                # parent folder (if SimCol3D scene), and original folder name with a counter.
                 unique_video_id_prefix = os.path.basename(root_dir)
                 if os.path.basename(os.path.dirname(video_folder_path)).startswith('SyntheticColon_'):
                     unique_video_id_prefix = f"{unique_video_id_prefix}_{os.path.basename(os.path.dirname(video_folder_path))}"
 
                 unique_video_id = f"{unique_video_id_prefix}_{video_name_from_folder}_{global_video_counter}" 
-                self.video_ids[unique_video_id] = global_video_counter
+                self.video_ids[unique_video_id] = global_video_counter # Map to an internal numeric ID
 
-                color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*_color.png'))) 
+                # Search for color images (prioritize _color.png (C3VD), then FrameBuffer_*.png (SimCol3D), 
+                # then general *.png, finally *.jpg)
+                color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*_color.png'))) # For C3VD
                 if not color_frames: 
-                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, 'FrameBuffer_*.png'))) 
+                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, 'FrameBuffer_*.png'))) # For SimCol3D
                 if not color_frames: 
-                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*.png'))) 
+                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*.png'))) # General .png
                 if not color_frames: 
-                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*.jpg'))) 
+                    color_frames = sorted(glob.glob(os.path.join(video_folder_path, '*.jpg'))) # General .jpg (e.g., for Colon10K test or other formats)
 
                 if not color_frames: 
                     print(f"Warning: No color images found in folder: {video_folder_path}. Skipping.")
@@ -71,6 +82,7 @@ class ColonoscopyTripletDataset(Dataset):
                 self.video_frames.extend([(frame_path, unique_video_id) for frame_path in color_frames])
                 global_video_counter += 1 
 
+        # Index for faster negative sample lookup (now using unique_video_id as key)
         self.frames_by_video_id = {vid: [] for vid in self.video_ids.keys()}
         for f_path, v_id in self.video_frames:
             self.frames_by_video_id[v_id].append(f_path)
@@ -86,18 +98,18 @@ class ColonoscopyTripletDataset(Dataset):
     def __getitem__(self, idx):
         anchor_path, anchor_video_id = self.video_frames[idx]
         
-        # --- Positive 样本选择 ---
+        # --- Positive Sample Selection ---
         if self.triplet_strategy == "sequential_intra_video":
             current_video_frames = self.frames_by_video_id[anchor_video_id]
             
-            # 如果视频序列只有一帧，则 Anchor 就是 Positive (损失会是0)
+            # If video sequence has only one frame, Anchor is Positive (loss will be 0)
             if len(current_video_frames) == 1:
                 positive_path = anchor_path
             else:
                 anchor_idx_in_video = current_video_frames.index(anchor_path)
                 if anchor_idx_in_video < len(current_video_frames) - 1:
                     positive_path = current_video_frames[anchor_idx_in_video + 1]
-                else: 
+                else: # If Anchor is the last frame of the video, choose the previous frame
                     positive_path = current_video_frames[anchor_idx_in_video - 1]
 
         elif self.triplet_strategy == "semantic_similar_intra_video":
@@ -105,14 +117,15 @@ class ColonoscopyTripletDataset(Dataset):
         else:
             raise ValueError(f"Unknown triplet strategy: {self.triplet_strategy}")
 
-        # --- Negative 样本选择 ---
+        # --- Negative Sample Selection ---
         negative_path = None
-        # 避免无限循环：如果整个数据集只有一个视频序列，无法找到负样本
+        # Avoid infinite loop: if the entire dataset has only one video sequence, cannot find a negative sample
         if len(self.video_ids) < 2: 
             print("Warning: Only one video sequence found in dataset. Negative sampling not possible. Triplet Loss may not function correctly.")
-            negative_path = random.choice(self.frames_by_video_id[anchor_video_id]) # 随机选一个同视频的作为负样本，这可能导致训练无效
-            if negative_path == anchor_path: # 避免 A=N
-                 negative_path = None # Force re-selection if only one frame too
+            # Fallback: choose a random frame from the same video as negative (will lead to non-informative triplets)
+            negative_path = random.choice(self.frames_by_video_id[anchor_video_id]) 
+            if negative_path == anchor_path: # Avoid A=N if there's only one frame in the sequence
+                 negative_path = None 
                  while negative_path is None or negative_path == anchor_path:
                     negative_path = random.choice(self.frames_by_video_id[anchor_video_id])
 
@@ -124,7 +137,7 @@ class ColonoscopyTripletDataset(Dataset):
             if self.frames_by_video_id[negative_video_id]:
                 negative_path = random.choice(self.frames_by_video_id[negative_video_id])
             
-        # --- 图像加载和转换 ---
+        # --- Image Loading and Transformation ---
         anchor_img = Image.open(anchor_path).convert("RGB")
         positive_img = Image.open(positive_path).convert("RGB")
         negative_img = Image.open(negative_path).convert("RGB")
@@ -136,7 +149,7 @@ class ColonoscopyTripletDataset(Dataset):
 
         return anchor_img, positive_img, negative_img
 
-# 评估时使用的 Dataset，只加载单张图片 (不变)
+# Inference Dataset (for evaluation, loads single images) (Unchanged)
 class InferenceDataset(Dataset):
     def __init__(self, img_paths, img_labels, transform=None):
         self.img_paths = img_paths
@@ -152,7 +165,7 @@ class InferenceDataset(Dataset):
             img = self.transform(img)
         return img, self.img_labels[idx]
 
-# --- 2. 模型定义 (不变) ---
+# --- 2. Model Definition (Unchanged) ---
 
 class GeM(nn.Module):
     """
@@ -199,7 +212,7 @@ class IRModel(nn.Module):
         x = F.normalize(x, p=2, dim=1) 
         return x
 
-# --- 3. 损失函数 (不变) ---
+# --- 3. Loss Function (Unchanged) ---
 
 class TripletLoss(nn.Module):
     def __init__(self, margin=1.0):
@@ -213,7 +226,7 @@ class TripletLoss(nn.Module):
         losses = F.relu(distance_positive - distance_negative + self.margin)
         return losses.mean()
 
-# --- 4. 训练脚本 (不变) ---
+# --- 4. Training Script (Unchanged) ---
 
 def train_model(model, train_loader, criterion, optimizer, num_epochs=10, device='cuda'):
     model.to(device)
@@ -245,7 +258,7 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs=10, device
 
     return model
 
-# --- 5. 评估脚本 (不变) ---
+# --- 5. Evaluation Script (Unchanged) ---
 
 def get_descriptors(model, dataloader, device='cuda'):
     model.to(device)
@@ -267,7 +280,7 @@ def get_descriptors(model, dataloader, device='cuda'):
     return np.vstack(descriptors), np.array(labels)
 
 def evaluate_retrieval(query_descriptors, gallery_descriptors, query_labels, gallery_labels,
-                       query_paths=None, gallery_paths=None): # 新增 query_paths 和 gallery_paths
+                       query_paths=None, gallery_paths=None): 
     
     if query_descriptors.size == 0 or gallery_descriptors.size == 0:
         print("Warning: Query or gallery descriptors are empty. Cannot perform evaluation.")
@@ -286,88 +299,95 @@ def evaluate_retrieval(query_descriptors, gallery_descriptors, query_labels, gal
         relevant_gallery_indices = [j for j, label in enumerate(gallery_labels) if label == query_label]
         
         num_true_relevant = len(relevant_gallery_indices)
+        # If query itself is in gallery, exclude it from count of true relevant items
         if current_query_path is not None and current_query_path in gallery_paths:
             query_in_gallery_idx = gallery_paths.index(current_query_path)
             if query_in_gallery_idx in relevant_gallery_indices:
                 num_true_relevant -= 1 
 
-        if num_true_relevant == 0:
+        if num_true_relevant == 0: # If no relevant items other than query itself, AP is 0
             aps.append(0.0)
             continue
 
         sorted_indices = np.argsort(similarities[i])[::-1]
         
-        # === 计算 RANK-1 ===
+        # === Calculate RANK-1 ===
         found_rank1 = False
         for k, gallery_idx in enumerate(sorted_indices):
+            # Exclude self-match: if current gallery item is the query itself, skip
             if current_query_path is not None and gallery_paths is not None:
                 if gallery_paths[gallery_idx] == current_query_path:
                     continue 
             
+            # If the current top-ranked (non-self) item has the same label as the query, it's a Rank-1 hit
             if gallery_labels[gallery_idx] == query_label: 
                 rank1_count += 1
                 found_rank1 = True 
-                break 
-
-        # === 计算 Average Precision (AP) ===
-        num_relevant_found_in_ranking = 0
+                break # Found the first relevant item, stop searching for Rank-1
+        
+        # === Calculate Average Precision (AP) ===
+        num_relevant_found_in_ranking = 0 # Count of relevant items found so far in the ranking
         sum_precisions = 0
         
         for k, gallery_idx in enumerate(sorted_indices):
+            # Exclude self-match for AP calculation as well
             if current_query_path is not None and gallery_paths is not None:
                 if gallery_paths[gallery_idx] == current_query_path:
                     continue 
             
             if gallery_labels[gallery_idx] == query_label:
                 num_relevant_found_in_ranking += 1
-                precision_at_k = num_relevant_found_in_ranking / (k + 1 - (1 if current_query_path is not None and gallery_paths is not None and gallery_paths.index(current_query_path) < (k+1) else 0) ) # 调整分母，如果自身被跳过，排名会提前
+                # Precision at this rank (number of relevant items found so far / total items retrieved so far)
+                # Denominator (k+1) needs adjustment if self-match was skipped earlier in the rank
+                precision_at_k = num_relevant_found_in_ranking / (k + 1 - (1 if current_query_path is not None and gallery_paths is not None and gallery_paths.index(current_query_path) < (k+1) else 0) ) 
                 sum_precisions += precision_at_k
             
+            # If all true relevant items have been found, can break early for optimization
             if num_relevant_found_in_ranking == num_true_relevant:
                 break
 
         if num_true_relevant > 0:
-            ap = sum_precisions / num_true_relevant
+            ap = sum_precisions / num_true_relevant # AP is the average of precisions at each relevant item's rank
             aps.append(ap)
-        else:
+        else: # If a query has no relevant items (other than itself), its AP is 0
             aps.append(0.0)
 
-    rank1 = rank1_count / len(query_labels)
-    mAP = np.mean(aps) if len(aps) > 0 else 0.0
+    rank1 = rank1_count / len(query_labels) # Rank-1 accuracy for all queries
+    mAP = np.mean(aps) if len(aps) > 0 else 0.0 # Mean Average Precision across all queries
 
     return rank1, mAP
 
-# --- 主运行逻辑 (从 main.py 整合) ---
+# --- Main Execution Logic (Integrated from main.py) ---
 
 if __name__ == "__main__":
-    # --- 0. 设置保存/加载路径 ---
-    MODEL_CHECKPOINT_DIR = './checkpoints' 
-    DESCRIPTORS_CACHE_DIR = './descriptors_cache' 
-    os.makedirs(MODEL_CHECKPOINT_DIR, exist_ok=True)
+    # --- 0. Setup Save/Load Paths ---
+    MODEL_CHECKPOINT_DIR = './checkpoints' # Directory to save trained models
+    DESCRIPTORS_CACHE_DIR = './descriptors_cache' # Directory to cache extracted descriptors
+    os.makedirs(MODEL_CHECKPOINT_DIR, exist_ok=True) # Create directories if they don't exist
     os.makedirs(DESCRIPTORS_CACHE_DIR, exist_ok=True)
 
-    # 1. 配置参数
-    # C3VD 数据集根目录
+    # 1. Configuration Parameters
+    # C3VD Dataset root directory
     C3VD_ROOT = '/data/horse/ws/zhyu410g-horse_C3VD_data/exported/' 
-    # SimCol3D 数据集根目录 (包含 SyntheticColon_I/II/III 的父目录)
+    # SimCol3D Dataset root directory (parent of SyntheticColon_I/II/III folders)
     SIMCOL3D_ROOT = '/data/horse/ws/zhyu410g-horse_simcol/' 
 
-    # 组合训练数据集的根目录列表
+    # List of root directories for training datasets (C3VD and SimCol3D)
     TRAIN_ROOT_DIRS = [C3VD_ROOT, SIMCOL3D_ROOT]
 
-    # Colon10K 测试数据集根目录
+    # Colon10K Test Dataset root directory
     TEST_ROOT_DIR = os.path.expanduser('~/Colon10K/10kdata/test')     
 
     BATCH_SIZE = 32
     NUM_EPOCHS = 20
     LEARNING_RATE = 0.0001
-    MARGIN = 1.0 
-    BACKBONE_NAME = 'resnet50' 
-    AGG_LAYER = 'gem' 
+    MARGIN = 1.0 # Margin for Triplet Loss
+    BACKBONE_NAME = 'resnet50' # or 'resnet101'
+    AGG_LAYER = 'gem' # or 'netvlad' (requires additional implementation)
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 定义模型和描述符保存的文件名 (现在考虑到多个训练数据集)
-    # 你可以加入一个 TRAIN_DATASET_IDENTIFIER 来区分不同的训练集组合
+    # Define filenames for saving model and descriptors (now considering multiple training datasets)
+    # A TRAIN_DATASET_IDENTIFIER is used to differentiate models trained with different dataset combinations.
     TRAIN_DATASET_IDENTIFIER = "C3VD_SimCol3D_Combined" 
     model_save_path = os.path.join(MODEL_CHECKPOINT_DIR, f"ir_model_{BACKBONE_NAME}_{AGG_LAYER}_ep{NUM_EPOCHS}_{TRAIN_DATASET_IDENTIFIER}.pth")
     query_desc_path = os.path.join(DESCRIPTORS_CACHE_DIR, f"query_desc_{BACKBONE_NAME}_{AGG_LAYER}_{TRAIN_DATASET_IDENTIFIER}.npy")
@@ -376,16 +396,16 @@ if __name__ == "__main__":
     gallery_labels_path = os.path.join(DESCRIPTORS_CACHE_DIR, f"gallery_labels_{BACKBONE_NAME}_{AGG_LAYER}_{TRAIN_DATASET_IDENTIFIER}.pkl")
 
 
-    # 2. 数据转换 (Data Augmentation)
+    # 2. Data Transformation (Data Augmentation)
     data_transforms_train = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.RandomApply([
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2) 
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2) # 'hue' parameter removed to prevent OverflowError
         ], p=0.8),
-        transforms.RandomRotation(degrees=5),
-        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(degrees=5), # Small rotations
+        transforms.RandomHorizontalFlip(), # Random horizontal flip
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # ImageNet mean and std for normalization
     ])
 
     data_transforms_eval = transforms.Compose([
@@ -394,27 +414,27 @@ if __name__ == "__main__":
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # 3. 准备训练数据
-    # 传入 TRAIN_ROOT_DIRS 列表
+    # 3. Prepare Training Data
+    # Pass TRAIN_ROOT_DIRS list to the dataset
     train_dataset = ColonoscopyTripletDataset(root_dirs=TRAIN_ROOT_DIRS, 
                                               transform=data_transforms_train,
                                               triplet_strategy="sequential_intra_video")
     if len(train_dataset) == 0:
         print(f"Error: Training dataset is empty. Check TRAIN_ROOT_DIRS: {TRAIN_ROOT_DIRS}")
-        sys.exit(1)
+        sys.exit(1) # Exit if training dataset is empty
 
     train_loader = DataLoader(train_dataset, 
                               batch_size=BATCH_SIZE, 
                               shuffle=True, 
-                              num_workers=8, 
-                              drop_last=True) 
+                              num_workers=8, # Recommended value to suppress warnings and optimize performance
+                              drop_last=True) # Drop the last incomplete batch for Triplet Loss
 
-    # 4. 初始化模型、损失函数和优化器
+    # 4. Initialize Model, Loss Function, and Optimizer
     model = IRModel(backbone_name=BACKBONE_NAME, agg_layer=AGG_LAYER)
     criterion = TripletLoss(margin=MARGIN)
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    # 5. 训练模型 或 加载已训练模型
+    # 5. Train Model or Load Pre-trained Model
     if os.path.exists(model_save_path):
         print(f"Loading pre-trained model from {model_save_path}")
         model.load_state_dict(torch.load(model_save_path, map_location=DEVICE))
@@ -425,17 +445,20 @@ if __name__ == "__main__":
         torch.save(trained_model.state_dict(), model_save_path)
         print(f"Trained model saved to {model_save_path}")
     
+    # Ensure 'trained_model' always references the loaded or newly trained model
     trained_model = model
 
-    # 6. 准备评估数据 (Colon10K)
+    # 6. Prepare Evaluation Data (Colon10K)
+    # Colon10K path and file type correction
+    # Ensure TEST_ROOT_DIR points to /home/h8/zhyu410g/Colon10K/10kdata/test/
     test_video_folders = sorted([d for d in glob.glob(os.path.join(TEST_ROOT_DIR, '*')) if os.path.isdir(d)])
     
     all_test_img_paths = []
     all_test_img_labels = [] 
 
     for folder in test_video_folders:
-        video_id = os.path.basename(folder)
-        color_frames = sorted(glob.glob(os.path.join(folder, '*.jpg'))) 
+        video_id = os.path.basename(folder) # Folder name serves as the "relevance label"
+        color_frames = sorted(glob.glob(os.path.join(folder, '*.jpg'))) # Search for .jpg files
         if not color_frames:
             print(f"Warning: No .jpg files found in folder: {folder}. Skipping this folder.")
             continue 
@@ -443,6 +466,7 @@ if __name__ == "__main__":
             all_test_img_paths.append(frame_path)
             all_test_img_labels.append(video_id) 
     
+    # Critical checkpoint: Check if evaluation dataset is empty
     if not all_test_img_paths:
         print(f"\nCRITICAL ERROR: 'all_test_img_paths' is EMPTY after attempting to load from {TEST_ROOT_DIR}.")
         print("This means no .jpg images were found conforming to the expected structure.")
@@ -454,7 +478,7 @@ if __name__ == "__main__":
         print(f"First 5 test image labels: {all_test_img_labels[:min(5, len(all_test_img_labels))]}")
 
     gallery_dataset = InferenceDataset(all_test_img_paths, all_test_img_labels, data_transforms_eval)
-    gallery_loader = DataLoader(gallery_dataset, batch_size=BATCH_SIZE * 2, shuffle=False, num_workers=8)
+    gallery_loader = DataLoader(gallery_dataset, batch_size=BATCH_SIZE * 2, shuffle=False, num_workers=8) # Recommended value
 
     num_queries = min(100, len(all_test_img_paths))
     if num_queries == 0:
@@ -466,9 +490,9 @@ if __name__ == "__main__":
     query_labels = [all_test_img_labels[i] for i in query_indices]
 
     query_dataset = InferenceDataset(query_paths, query_labels, data_transforms_eval)
-    query_loader = DataLoader(query_dataset, batch_size=BATCH_SIZE * 2, shuffle=False, num_workers=8)
+    query_loader = DataLoader(query_dataset, batch_size=BATCH_SIZE * 2, shuffle=False, num_workers=8) # Recommended value
 
-    # 7. 提取描述符 或 加载已提取的描述符
+    # 7. Extract Descriptors or Load Cached Descriptors
     if os.path.exists(query_desc_path) and os.path.exists(query_labels_path) and \
        os.path.exists(gallery_desc_path) and os.path.exists(gallery_labels_path):
         print(f"\nLoading cached descriptors from {DESCRIPTORS_CACHE_DIR}...")
@@ -492,12 +516,16 @@ if __name__ == "__main__":
             pickle.dump(extracted_gallery_labels, f)
         print("Descriptors extracted and cached successfully.")
 
-    # 8. 评估检索性能
+    # 8. Evaluate Retrieval Performance
     print("Evaluating retrieval performance...")
-    # 传入 query_paths 和 all_test_img_paths 用于排除自匹配
+    # Pass query_paths and all_test_img_paths (as gallery_paths) to evaluate_retrieval for self-match exclusion
     rank1, mAP = evaluate_retrieval(query_descriptors, gallery_descriptors, extracted_query_labels, extracted_gallery_labels,
                                     query_paths=query_paths, gallery_paths=all_test_img_paths) 
 
     print(f"\n--- Evaluation Results ({AGG_LAYER.upper()} aggregation) ---")
     print(f"RANK-1 (excluding self-match): {rank1:.4f}") 
     print(f"mAP: {mAP:.4f}")
+
+    # TODO: If you want to compare GeM vs. NetVLAD:
+    # 1. Implement NetVLAD module or find and integrate an existing PyTorch NetVLAD library.
+    # 2. Repeat the training and evaluation process here for NetVLAD.
