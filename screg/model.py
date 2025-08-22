@@ -55,7 +55,8 @@ class PointEmbed(nn.Module):
         embed_dim: int = 256,
     ) -> None:
         super().__init__()
-        # Pre-compute and register harmonic frequencies (shape: [F])
+        # Pre-compute and register harmonic frequencies (shape: [F]), 
+        # Computed for 20cm level scene size and 1mm regression precision according paper
         freqs = torch.tensor([f1 * (gamma ** i) for i in range(F)], dtype=torch.float32)
         self.register_buffer("frequencies", freqs)
 
@@ -182,7 +183,7 @@ class SCRegNet(CroCoNet):
         self.conf_mode = conf_mode
 
         # Extra modules
-        self.point_embed = PointEmbed(in_dim=3, embed_dim=256)
+        self.point_embed = PointEmbed(embed_dim=256)
         self.mixer = ThreeDMixer()
 
         # Downstream head
@@ -205,6 +206,10 @@ class SCRegNet(CroCoNet):
             'has_conf': has_conf,
         }
         print('[SCRegNet] Structure:', ', '.join(f"{k}={v}" for k, v in struct_params.items()))
+    
+    def _set_prediction_head(self, dec_embed_dim, patch_size):
+        # 不创建 prediction_head，或者创建一个占位符
+        pass
 
     # ------------------------------------------------------------------
     # Weight loading helpers
@@ -217,7 +222,6 @@ class SCRegNet(CroCoNet):
                         head_type: str = 'dpt',
                         output_mode: str = 'pts3d',
                         show_mismatch: bool = True,
-                        
                         **kwargs):
         """Instantiate *and* load weights from a checkpoint.
 
@@ -381,5 +385,7 @@ class SCRegNet(CroCoNet):
 
         # Head
         H, W = query_img.shape[-2:]
-        result = self.head(decout, (H, W))  # type: ignore[arg-type]
+        result = self.downstream_head1(decout, (H, W))  # 使用正确的头部属性
         return result
+
+
