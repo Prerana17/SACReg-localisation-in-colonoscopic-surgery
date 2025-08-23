@@ -127,21 +127,27 @@ class ThreeDMixer(nn.Module):
     def __init__(self,
                  n_img_blocks: int = 4,
                  n_pt_blocks: int = 3,
-                 embed_dim_img: int = 768,
+                 embed_dim_img: int = 1024,
                  embed_dim_pt: int = 256,
                  num_heads: int = 12):
         super().__init__()
+        print("\n[ThreeDMixer] constructor kwargs ↓")
+        print(f"n_img_blocks: {n_img_blocks}")
+        print(f"n_pt_blocks: {n_pt_blocks}")
+        print(f"embed_dim_img: {embed_dim_img}")
+        print(f"embed_dim_pt: {embed_dim_pt}")
+        print(f"num_heads: {num_heads}")
         assert n_img_blocks == n_pt_blocks + 1, "Need one more image block than point blocks (I/P alternation)."
 
         # Shared linear projections
-        self.up_pt = nn.Linear(embed_dim_pt, embed_dim_img)   # 256 → 768
-        self.down_pt = nn.Linear(embed_dim_img, embed_dim_pt)  # 768 → 256
+        self.up_pt = nn.Linear(embed_dim_pt, embed_dim_img)   # 256 → 1024
+        self.down_pt = nn.Linear(embed_dim_img, embed_dim_pt)  # 1024 → 256
 
         self.img_blocks = nn.ModuleList([DecoderBlock(embed_dim_img, num_heads) for _ in range(n_img_blocks)])
         self.pt_blocks = nn.ModuleList([PointLevelDecoderBlock(embed_dim_pt, num_heads) for _ in range(n_pt_blocks)])
 
     def forward(self,
-                img_tok: torch.Tensor,   # (B,S,768)
+                img_tok: torch.Tensor,   # (B,S,1024)
                 img_pos: torch.Tensor,   # (B,S,2)
                 pt_tok: torch.Tensor     # (B,N,256)
                 ) -> torch.Tensor:
@@ -308,6 +314,10 @@ class SCRegNet(CroCoNet):
         if has_conf_detect is None:
             has_conf_detect = False
 
+        # import pprint
+        # print("\n[SCRegNet] constructor kwargs ↓")
+        # pprint.pprint(croco_conf)
+        # pprint.pprint(extra)
         model = cls(head_type=extra.get('head_type', head_type),
                     output_mode=extra.get('output_mode', output_mode),
                     depth_mode=extra.get('depth_mode', ("exp", -float('inf'), float('inf'))),
@@ -371,14 +381,34 @@ class SCRegNet(CroCoNet):
         correspondences : Tensor (B,N,5) – (u,v,x,y,z)
         """
         # ViT encoders (no masking)
+
+        print("\n[Q Image Shape 1 ] constructor kwargs ↓")
+        print(query_img.shape)
+        print("\n[B Image Shape 2 ] constructor kwargs ↓")
+        print(retrieved_img.shape)
         feat_q, pos_q, _ = self._encode_image(query_img, do_mask=False)
         feat_b, pos_b, _ = self._encode_image(retrieved_img, do_mask=False)
+        print("\n[Q Image Shape 2 ] constructor kwargs ↓")
+        print(feat_q.shape)
+        print("\n[B Image Shape 2 ] constructor kwargs ↓")
+        print(feat_b.shape)
 
         # 3-D point embedding
+        print("\n[ correspondences  Shape] constructor kwargs ↓")
+        print(correspondences.shape)
         pt_tok = self.point_embed(correspondences)  # (B,N,256)
+
+        print("\n[embedded correspondences  Shape] constructor kwargs ↓")
+        print(pt_tok.shape)
+
 
         # 3DMixer fusion → enhanced image tokens
         feat_b_mix = self.mixer(feat_b, pos_b, pt_tok)  # (B,S,768)
+        print("\n[feat_b_mix  Shape]  kwargs ↓")
+        print(feat_b_mix.shape)
+
+
+        # feat_b_mix = self.decoder_embed(feat_b_mix)
 
         # Cross-attention decoder
         decout = self._cross_decoder(feat_q, pos_q, feat_b_mix, pos_b, return_all=self.return_all_layers)
