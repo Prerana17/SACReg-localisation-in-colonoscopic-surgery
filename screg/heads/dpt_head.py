@@ -6,7 +6,7 @@ from typing import List
 import torch
 import torch.nn as nn
 from .postprocess import postprocess
-from models.dpt_block import DPTOutputAdapter  # from croco repo
+from croco.models.dpt_block import DPTOutputAdapter  # corrected import
 
 
 class DPTOutputAdapterFix(DPTOutputAdapter):
@@ -79,7 +79,7 @@ def create_dpt_head(net, has_conf: bool = False):
     return PixelwiseTaskWithDPT(num_channels=out_nchan + has_conf,
                                 feature_dim=feature_dim,
                                 last_dim=last_dim,
-                                hooks_idx=[0, l2 * 2 // 4, l2 * 3 // 4, l2],
+                                hooks_idx=[0, l2 * 2 // 4, l2 * 3 // 4, l2-1],
                                 dim_tokens=[ed, dd, dd, dd],
                                 postprocess=postprocess,
                                 depth_mode=net.depth_mode,

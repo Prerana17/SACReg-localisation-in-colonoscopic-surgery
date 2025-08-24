@@ -414,13 +414,13 @@ class SCRegNet(CroCoNet):
     # ------------------------------------------------------------------
     # Forward helpers
     # ------------------------------------------------------------------
-    def _cross_decoder(self,
-                       q_feat: torch.Tensor, q_pos: torch.Tensor,
-                       kv_feat: torch.Tensor, kv_pos: torch.Tensor,
-                       return_all: bool = False):
-        """Run CroCo decoder where Q comes from q_feat and K/V from kv_feat."""
-        # Inherit CroCo decoder but feed kv as memory (feat2) and ignore masks.
-        return self._decoder(q_feat, q_pos, None, kv_feat, kv_pos, return_all_blocks=return_all)
+    # def _cross_decoder(self,
+    #                    q_feat: torch.Tensor, q_pos: torch.Tensor,
+    #                    kv_feat: torch.Tensor, kv_pos: torch.Tensor,
+    #                    return_all: bool = False):
+    #     """Run CroCo decoder where Q comes from q_feat and K/V from kv_feat."""
+    #     # Inherit CroCo decoder but feed kv as memory (feat2) and ignore masks.
+    #     return self._decoder(q_feat, q_pos, None, kv_feat, kv_pos, return_all_blocks=return_all)
 
     # ------------------------------------------------------------------
     # Public forward
@@ -469,11 +469,15 @@ class SCRegNet(CroCoNet):
         # feat_b_mix = self.decoder_embed(feat_b_mix)
 
         # Cross-attention decoder
-        decout = self._cross_decoder(feat_q, pos_q, feat_b_mix, pos_b, return_all=self.return_all_layers)
+        decout = self._decoder(feat_q, pos_q, None, feat_b_mix, pos_b, return_all_blocks=self.return_all_layers)
+        
+        # Combine encoder + decoder features for DPT head (matches dust3r expectation)
+        # DPT expects: [encoder_feat, decoder_layer_6, decoder_layer_9, decoder_layer_11]
+        combined_features = [feat_q] + decout  # feat_q is 1024-dim encoder output
 
         # Head
         H, W = query_img.shape[-2:]
-        result = self.downstream_head1(decout, (H, W))  # 使用正确的头部属性
+        result = self.downstream_head1(combined_features, (H, W))
         return result
 
 
