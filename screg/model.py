@@ -105,6 +105,63 @@ class PointEmbed(nn.Module):
         return self.mlp(feat)
 
 
+# ---------------------------------------------------------------------------
+# Standard transformer-based decoder blocks (image & point) for 3D-Mixer
+# ---------------------------------------------------------------------------
+class StandardImageDecoderBlock(nn.Module):
+    """Classic Transformer decoder block with self-attention on image tokens
+    followed by cross-attention with point tokens.
+    """
+    def __init__(self, dim: int = 1024, num_heads: int = 8, mlp_ratio: float = 4.0, dropout: float = 0.0):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(dim)
+        self.self_attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.ln2 = nn.LayerNorm(dim)
+        self.cross_attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
+        self.ln3 = nn.LayerNorm(dim)
+        hidden_dim = int(dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor, mem: torch.Tensor) -> torch.Tensor:
+        # Self-attention
+        x = x + self.self_attn(self.ln1(x), self.ln1(x), self.ln1(x))[0]
+        # Cross-attention (keys/values from mem)
+        x = x + self.cross_attn(self.ln2(x), mem, mem)[0]
+        # Feed-forward
+        x = x + self.mlp(self.ln3(x))
+        return x  # (B, S, C)
+
+
+class StandardPointDecoderBlock(nn.Module):
+    """Point-level block: only cross-attention (no self-attention)."""
+    def __init__(self, dim_pt: int = 256, dim_img: int = 1024, num_heads: int = 8, mlp_ratio: float = 4.0, dropout: float = 0.0):
+        super().__init__()
+        self.ln_q = nn.LayerNorm(dim_pt)
+        self.cross_attn = nn.MultiheadAttention(dim_pt, num_heads, dropout=dropout, batch_first=True)
+        self.ln_ff = nn.LayerNorm(dim_pt)
+        hidden_dim = int(dim_pt * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(dim_pt, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, dim_pt),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, q: torch.Tensor, kv: torch.Tensor) -> torch.Tensor:
+        # Cross-attention only (query = point tokens, key/value = image tokens)
+        q = q + self.cross_attn(self.ln_q(q), kv, kv)[0]
+        q = q + self.mlp(self.ln_ff(q))
+        return q  # (B, N, dim_pt)
+
+
+# ---------------------------------------------------------------------------
+# Existing croco-based PointLevelDecoderBlock remains for backward compatibility
+# ---------------------------------------------------------------------------
 class PointLevelDecoderBlock(nn.Module):
     """DecoderBlock variant without self-attention (SA)."""
 
@@ -143,8 +200,9 @@ class ThreeDMixer(nn.Module):
         self.up_pt = nn.Linear(embed_dim_pt, embed_dim_img)   # 256 → 1024
         self.down_pt = nn.Linear(embed_dim_img, embed_dim_pt)  # 1024 → 256
 
-        self.img_blocks = nn.ModuleList([DecoderBlock(embed_dim_img, num_heads) for _ in range(n_img_blocks)])
-        self.pt_blocks = nn.ModuleList([PointLevelDecoderBlock(embed_dim_pt, num_heads) for _ in range(n_pt_blocks)])
+        # Use classic Transformer implementations
+        self.img_blocks = nn.ModuleList([StandardImageDecoderBlock(embed_dim_img, 8) for _ in range(n_img_blocks)])
+        self.pt_blocks = nn.ModuleList([StandardPointDecoderBlock(embed_dim_pt, embed_dim_img, 8) for _ in range(n_pt_blocks)])
 
     def forward(self,
                 img_tok: torch.Tensor,   # (B,S,1024)
@@ -156,13 +214,13 @@ class ThreeDMixer(nn.Module):
         pt_seq = pt_tok
 
         for img_block, pt_block in zip(self.img_blocks[:-1], self.pt_blocks):
-            # Image-level decoder block (self+cross with point as mem)
-            img_seq, _ = img_block(img_seq, self.up_pt(pt_seq), img_pos, img_pos)  # treat pt as y after up-proj
+            # Image-level decoder block (self + cross-attention)
+            img_seq = img_block(img_seq, self.up_pt(pt_seq))
             # Point-level block (cross only)
-            pt_seq = pt_block(pt_seq, self.down_pt(img_seq), img_pos, img_pos)
+            pt_seq = pt_block(pt_seq, self.down_pt(img_seq))
         # Final image block
-        img_seq, _ = self.img_blocks[-1](img_seq, self.up_pt(pt_seq), img_pos, img_pos)
-        return img_seq  # (B,S,768)
+        img_seq = self.img_blocks[-1](img_seq, self.up_pt(pt_seq))
+        return img_seq  # (B,S,1024)
 
 
 class SCRegNet(CroCoNet):
