@@ -485,4 +485,39 @@ class SCRegNet(CroCoNet):
         result = self.downstream_head1(combined_features, (H, W))
         return result
 
+    # ------------------------------------------------------------------
+    # Training utilities
+    # ------------------------------------------------------------------
+    def set_freeze(self, *, encoder: bool = False, decoder: bool = False, head: bool = False, mixer: bool = False):
+        """Freeze/unfreeze sub-modules on demand.
+
+        Passing True freezes the corresponding part (requires_grad=False). False unfreezes.
+        """
+        def _toggle(module, freeze_flag: bool):
+            if module is None:
+                return
+            for p in module.parameters():
+                p.requires_grad = not freeze_flag
+
+        # Encoder = patch embedding + encoder blocks + pos_embed param
+        if hasattr(self, 'patch_embed'):
+            _toggle(self.patch_embed, encoder)
+        if hasattr(self, 'enc_blocks'):
+            _toggle(self.enc_blocks, encoder)
+        if hasattr(self, 'pos_embed') and isinstance(self.pos_embed, torch.nn.Parameter):
+            self.pos_embed.requires_grad = not encoder
+
+        # Decoder blocks
+        if hasattr(self, 'dec_blocks'):
+            _toggle(self.dec_blocks, decoder)
+
+        # 3D Mixer
+        _toggle(self.mixer, mixer)
+
+        # Prediction head
+        _toggle(self.downstream_head1, head)
+
+        # Optionally log
+        print(f"[set_freeze] encoder={encoder}, decoder={decoder}, mixer={mixer}, head={head}")
+
 

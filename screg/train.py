@@ -72,7 +72,17 @@ def pixelwise_confidence_loss(pred: torch.Tensor, target: torch.Tensor, tau: tor
         tau = tau.unsqueeze(1)
     tau = tau.clamp_min(1e-6)  # ensure positive
 
-    diff = (pred - target).abs()  # (B,38,H,W)
+    # Pairwise ℓ2 normalisation on harmonic components of prediction (cos,sin)
+    # Skip first 2 channels (u,v), normalise 18 (cos,sin) pairs per xyz axis.
+    if pred.shape[1] != 38:
+        raise ValueError("Expected 38-D φ vector")
+    uv_pred = pred[:, :2]
+    enc_pred = pred[:, 2:].reshape(pred.shape[0], 18, 2, *pred.shape[2:])  # (B,18,2,H,W)
+    norm = enc_pred.norm(dim=2, keepdim=True).clamp_min(1e-6)
+    enc_pred = enc_pred / norm
+    pred_norm = torch.cat([uv_pred, enc_pred.reshape(pred.shape[0], 36, *pred.shape[2:])], dim=1)
+
+    diff = (pred_norm - target).abs()  # (B,38,H,W)
 
     if mask is not None:
         if mask.dim() == 3:
@@ -90,8 +100,8 @@ def pixelwise_confidence_loss(pred: torch.Tensor, target: torch.Tensor, tau: tor
 # Optimiser & scheduler
 # -----------------------------------------------------------------------------
 
-def build_optimizer(model: torch.nn.Module, lr: float = 1e-4):
-    return torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.05)
+def build_optimizer(params, lr: float = 1e-4):
+    return torch.optim.AdamW(params, lr=lr, betas=(0.9, 0.95), weight_decay=0.05)
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer):
@@ -150,10 +160,10 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
 # Main entry
 # -----------------------------------------------------------------------------
 
-def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 100, batch_size: int = 16, num_workers: int = 4, device: str | torch.device = "cuda", ckpt_path: str | None = None, out_dir: str = "checkpoints"):
+def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 100, batch_size: int = 16, num_workers: int = 4, device: str | torch.device = "cuda", ckpt_path: str | None = None, out_dir: str = "checkpoints", *, freeze_encoder=False, freeze_decoder=False, freeze_mixer=False, freeze_head=False):
     device = torch.device(device)
 
-    ds = SimCol3DDataset(top_k=50, n_samples=256)
+    ds = SimCol3DDataset(top_k=1, n_samples=256)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, collate_fn=simcol3d_collate_fn)
 
     # Create model and optionally load pretrained weights
@@ -163,7 +173,19 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
     else:
         model = SCRegNet(has_conf=True).to(device)
 
-    optimizer = build_optimizer(model)
+    print("[before freeze] Model parameters")
+    n_total = sum(p.numel() for p in model.parameters())
+    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"trainable = {n_train}/{n_total}  ({n_train/n_total:.1%})")
+    # Freeze modules as requested
+    model.set_freeze(encoder=freeze_encoder, decoder=freeze_decoder, mixer=freeze_mixer, head=freeze_head)
+    print("[after freeze] Model parameters")
+    n_total = sum(p.numel() for p in model.parameters())
+    n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"trainable = {n_train}/{n_total}  ({n_train/n_total:.1%})")
+    # Build optimizer with trainable params only
+    trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+    optimizer = build_optimizer(trainable_params)
     scheduler = build_scheduler(optimizer)
     scaler = GradScaler()
 
@@ -197,6 +219,11 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda", help="cuda | cpu | cuda:0 ...")
+    # Freeze flags
+    parser.add_argument("--freeze_encoder", action="store_true", help="freeze ViT encoder")
+    parser.add_argument("--freeze_decoder", action="store_true", help="freeze cross decoder")
+    parser.add_argument("--freeze_mixer", action="store_true", help="freeze 3D mixer module")
+    parser.add_argument("--freeze_head", action="store_true", help="freeze prediction head")
     parser.add_argument("--pretrained", type=str, default=None, help="path to Dust3r weight to load")
     parser.add_argument("--out_dir", type=str, default="checkpoints", help="folder to save checkpoints & log")
     cli_args = parser.parse_args()
@@ -209,4 +236,8 @@ if __name__ == "__main__":
         device=cli_args.device,
         ckpt_path=cli_args.pretrained,
         out_dir=cli_args.out_dir,
+        freeze_encoder=cli_args.freeze_encoder,
+        freeze_decoder=cli_args.freeze_decoder,
+        freeze_mixer=cli_args.freeze_mixer,
+        freeze_head=cli_args.freeze_head,
     )
