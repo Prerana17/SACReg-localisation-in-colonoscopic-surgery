@@ -56,9 +56,6 @@ class BasePairDataset(Dataset):
             f"samples/DB_img={self.n_samples}"
         )
 
-        # Prepare φ-encoder (before MLP) for computing 38-D targets
-        self._phi_encoder = _Phi38Encoder()
-
     # ------------------------------------------------------------------
     # Abstract helpers (can be overridden by subclasses)
     # ------------------------------------------------------------------
@@ -114,16 +111,15 @@ class BasePairDataset(Dataset):
         uvxyz = np.column_stack([u_n, v_n, xyz_samples.reshape(-1, 3)])  # (k,5)
         uvxyz_t = torch.from_numpy(uvxyz)
 
-        # --- Query φ-encoding target ---
-        xyz_q = self._load_xyz(q_rgb_path)  # (H,W,3)
-        phi_q = self._phi_encoder.encode_np(xyz_q)  # (38,H,W)
-        phi_q_t = torch.from_numpy(phi_q)
+        # --- Query xyz target (no φ38 precompute) ---
+        xyz_q = self._load_xyz(q_rgb_path)  # (H_orig,W_orig,3)
+        xyz_q_t = torch.from_numpy(xyz_q).permute(2, 0, 1)  # (3,H,W)
 
         return {
             "query_img": q_img,
             "db_img": db_img,
             "uvxyz": uvxyz_t,  # (k,5)
-            "phi38_query": phi_q_t,  # (38,H,W)
+            "query_xyz": xyz_q_t,  # (3,H,W)
             "query_path": str(q_rgb_path),
             "db_path": str(db_rgb_path),
         }

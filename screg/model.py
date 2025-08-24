@@ -382,7 +382,12 @@ class SCRegNet(CroCoNet):
                     conf_mode=extra.get('conf_mode', ("exp",1,float('inf'))),
                     has_conf=has_conf_detect,
                     **croco_conf)
-        missing, unexpected = model.load_state_dict(state, strict=strict)
+        # ------------------------------------------------------------------
+        # Filter out parameters whose shape does not match current model (e.g., head).
+        # ------------------------------------------------------------------
+        model_state = model.state_dict()
+        compatible_state = {k: v for k, v in state.items() if k in model_state and v.shape == model_state[k].shape}
+        missing, unexpected = model.load_state_dict(compatible_state, strict=False)
         if show_mismatch:
             if missing:
                 print(f"[SCRegNet] Missing params ({len(missing)}):")
@@ -440,30 +445,30 @@ class SCRegNet(CroCoNet):
         """
         # ViT encoders (no masking)
 
-        print("\n[Q Image Shape 1 ] constructor kwargs ↓")
-        print(query_img.shape)
-        print("\n[B Image Shape 2 ] constructor kwargs ↓")
-        print(retrieved_img.shape)
+        # print("\n[Q Image Shape 1 ] constructor kwargs ↓")
+        # print(query_img.shape)
+        # print("\n[B Image Shape 2 ] constructor kwargs ↓")
+        # print(retrieved_img.shape)
         feat_q, pos_q, _ = self._encode_image(query_img, do_mask=False)
         feat_b, pos_b, _ = self._encode_image(retrieved_img, do_mask=False)
-        print("\n[Q Image Shape 2 ] constructor kwargs ↓")
-        print(feat_q.shape)
-        print("\n[B Image Shape 2 ] constructor kwargs ↓")
-        print(feat_b.shape)
+        # print("\n[Q Image Shape 2 ] constructor kwargs ↓")
+        # print(feat_q.shape)
+        # print("\n[B Image Shape 2 ] constructor kwargs ↓")
+        # print(feat_b.shape)
 
         # 3-D point embedding
-        print("\n[ correspondences  Shape] constructor kwargs ↓")
-        print(correspondences.shape)
+        # print("\n[ correspondences  Shape] constructor kwargs ↓")
+        # print(correspondences.shape)
         pt_tok = self.point_embed(correspondences)  # (B,N,256)
 
-        print("\n[embedded correspondences  Shape] constructor kwargs ↓")
-        print(pt_tok.shape)
+        # print("\n[embedded correspondences  Shape] constructor kwargs ↓")
+        # print(pt_tok.shape)
 
 
         # 3DMixer fusion → enhanced image tokens
         feat_b_mix = self.mixer(feat_b, pos_b, pt_tok)  # (B,S,768)
-        print("\n[feat_b_mix  Shape]  kwargs ↓")
-        print(feat_b_mix.shape)
+        # print("\n[feat_b_mix  Shape]  kwargs ↓")
+        # print(feat_b_mix.shape)
 
 
         # feat_b_mix = self.decoder_embed(feat_b_mix)

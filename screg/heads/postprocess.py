@@ -2,7 +2,7 @@
 """
 import torch
 
-def postprocess(out, depth_mode, conf_mode):
+def postprocess(out, depth_mode=None, conf_mode=None):
     """Extract 3D points/confidence from head output tensor.
 
     Parameters
@@ -12,10 +12,12 @@ def postprocess(out, depth_mode, conf_mode):
     depth_mode, conf_mode : tuple
         Modes as described in dust3r paper.
     """
+    # Expect out shape (B,C,H,W) with C = 38 (+1 conf if present).
     fmap = out.permute(0, 2, 3, 1)  # B,H,W,C
-    res = dict(pts3d=reg_dense_depth(fmap[:, :, :, 0:3], mode=depth_mode))
-    if conf_mode is not None:
-        res['conf'] = reg_dense_conf(fmap[:, :, :, 3], mode=conf_mode)
+    phi = fmap[:, :, :, :38].permute(0, 3, 1, 2)  # B,38,H,W
+    res = {"phi38": phi}
+    if fmap.shape[-1] > 38:
+        res["conf"] = fmap[:, :, :, 38]  # (B,H,W)
     return res
 
 

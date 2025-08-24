@@ -251,8 +251,6 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         out = model(q_img, db_img, uvxyz)
-
-    print("=== Forward pass shapes ===")
     for k, v in out.items():
         if torch.is_tensor(v):
             print(f"{k}: {tuple(v.shape)}")
