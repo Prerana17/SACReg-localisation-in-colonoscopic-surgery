@@ -15,9 +15,12 @@ from torch.utils.data import DataLoader
 
 from .datasets import SimCol3DDataset, simcol3d_collate_fn
 from .model import SCRegNet, PointEmbed
+# --- Switched to direct 3-D regression ---
+from .losses import Regr3D_World, ConfLoss_World, L21
 
 # -----------------------------------------------------------------------------
 # φ-encoding helper (vectorised torch) – matches PointEmbed 38-D scheme
+# (Deprecated: now regress XYZ directly; kept for reference)
 # -----------------------------------------------------------------------------
 F1_DEFAULT = 0.017903170262351338
 GAMMA_DEFAULT = 2.884031503126606
@@ -115,6 +118,8 @@ def build_scheduler(optimizer: torch.optim.Optimizer):
 # -----------------------------------------------------------------------------
 
 def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, scaler, device, epoch):
+    # Instantiate 3-D regression + confidence loss (once per epoch)
+    loss_fn = ConfLoss_World(Regr3D_World(L21))
     model.train()
     total_loss = 0.0
     pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
@@ -134,15 +139,24 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
         # Resize xyz to image resolution
         xyz_gt_rs = F.interpolate(xyz_gt, size=(H_tgt, W_tgt), mode="bilinear", align_corners=False)
 
-        # Compute φ38 target on-the-fly
-        phi_gt = encode_phi38(xyz_gt_rs)
+        # ------------------------------------------------------------------
+        # Deprecated φ38 pipeline ⇒ switch to direct XYZ regression
+        # phi_gt = encode_phi38(xyz_gt_rs)
+        # ------------------------------------------------------------------
 
         with autocast():
             outputs = model(query_img, db_img, uvxyz)
-            phi_pred = outputs["phi38"]  # (B,38,H,W)
-            tau = outputs["conf"]  # (B,H,W)
+            pts_pred = outputs["pts3d"]  # (B,H,W,3)
+            tau = outputs["conf"]        # (B,H,W)
 
-            loss = pixelwise_confidence_loss(phi_pred, phi_gt, tau, mask=None)
+            # Build GT / pred dicts for 3-D loss
+            gt_dict = {
+                "pts3d": xyz_gt_rs.permute(0, 2, 3, 1),      # (B,H,W,3)
+                "valid_mask": torch.ones_like(tau, dtype=torch.bool),
+            }
+            pred_dict = {"pts3d": pts_pred, "conf": tau}
+
+            loss, _ = loss_fn(gt_dict, pred_dict)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)

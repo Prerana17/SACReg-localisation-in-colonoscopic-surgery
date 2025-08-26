@@ -12,12 +12,14 @@ def postprocess(out, depth_mode=None, conf_mode=None):
     depth_mode, conf_mode : tuple
         Modes as described in dust3r paper.
     """
-    # Expect out shape (B,C,H,W) with C = 38 (+1 conf if present).
+    # Expect out shape (B,C,H,W) with C = 3 (+1 conf if present).
     fmap = out.permute(0, 2, 3, 1)  # B,H,W,C
-    phi = fmap[:, :, :, :38].permute(0, 3, 1, 2)  # B,38,H,W
-    res = {"phi38": phi}
-    if fmap.shape[-1] > 38:
-        res["conf"] = fmap[:, :, :, 38]  # (B,H,W)
+    # First 3 channels encode (x,y,z) direction/depth per pixel
+    res = dict(pts3d=reg_dense_depth(fmap[:, :, :, 0:3], mode=depth_mode))
+
+    # Optional confidence channel if present and requested
+    if conf_mode is not None and fmap.shape[-1] > 3:
+        res["conf"] = reg_dense_conf(fmap[:, :, :, 3], mode=conf_mode)
     return res
 
 
