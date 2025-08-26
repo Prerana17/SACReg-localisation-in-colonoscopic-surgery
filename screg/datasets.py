@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import random
 from pathlib import Path
+from scipy.spatial.transform import Rotation as R
 from typing import List, Tuple, Sequence, Optional, Dict, Any
 
 import numpy as np
@@ -41,12 +42,14 @@ class BasePairDataset(Dataset):
         img_size: Tuple[int, int] = (512, 512),
         xyz_suffix: str = ".xyz.npy",
         rng: Optional[random.Random] = None,
+        camera_K: Optional[np.ndarray] = None,
     ) -> None:
         super().__init__()
         self.pairs: List[Tuple[Path, Path]] = list(pair_paths)
         self.n_samples = n_samples
         self.img_size = img_size
         self.xyz_suffix = xyz_suffix
+        self.camera_K = camera_K
         self.rng = rng or random.Random()
 
         # Report stats
@@ -63,6 +66,22 @@ class BasePairDataset(Dataset):
         """Load RGB image as float32 tensor in [0,1] of shape (C,H,W)."""
         img = Image.open(path).convert("RGB")
         return to_tensor(img)  # already float32 / 0-1
+
+    def _load_pose(self, rgb_path: Path) -> np.ndarray:
+        """Return 4×4 world→camera pose for *rgb_path*."""
+        pose_path = Path(str(rgb_path).replace('.rgb.png', '.pose.txt'))
+        if not pose_path.exists():
+            raise FileNotFoundError(pose_path)
+        vals = np.fromstring(pose_path.read_text(), sep=" ", dtype=np.float32)
+        if vals.size != 7:
+            raise ValueError(f"Unexpected pose format: {pose_path}")
+        t = vals[:3] * 0.01  # cm→m
+        q = vals[3:]
+        Rm = R.from_quat(q).as_matrix().astype(np.float32)
+        pose = np.eye(4, dtype=np.float32)
+        pose[:3, :3] = Rm
+        pose[:3, 3] = t
+        return pose
 
     def _load_xyz(self, rgb_path: Path) -> np.ndarray:
         """Load xyz world coordinates matching *rgb_path*.
@@ -115,16 +134,33 @@ class BasePairDataset(Dataset):
         xyz_q = self._load_xyz(q_rgb_path)  # (H_orig,W_orig,3)
         xyz_q_t = torch.from_numpy(xyz_q).permute(2, 0, 1)  # (3,H,W)
 
-        return {
+        pose_q = self._load_pose(q_rgb_path)
+        sample = {
             "query_img": q_img,
             "db_img": db_img,
             "uvxyz": uvxyz_t,  # (k,5)
             "query_xyz": xyz_q_t,  # (3,H,W)
             "query_path": str(q_rgb_path),
             "db_path": str(db_rgb_path),
+            "query_pose": pose_q,  # (4,4)
         }
+        # Lazy K load if not set
+        if self.camera_K is None:
+            cam_path = Path(q_rgb_path).parent.parent / "cam.txt"
+            if cam_path.exists():
+                vals = [float(v) for v in cam_path.read_text().strip().replace("\n", " ").split()]
+                if len(vals) >= 6:
+                    fx, fy, cx, cy = vals[0], vals[4], vals[2], vals[5]
+                    self.camera_K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+        if self.camera_K is not None:
+            sample["K"] = torch.from_numpy(self.camera_K).float()
+        return sample
 
 
+
+# -----------------------------------------------------------------------------
+# SimCol3D dataset -------------------------------------------------------------
+# -----------------------------------------------------------------------------
 class SimCol3DDataset(BasePairDataset):
     """SimCol3D implementation reading `pairs_topK.txt` from colon I & II."""
 
@@ -158,7 +194,17 @@ class SimCol3DDataset(BasePairDataset):
                         pair_paths.append((q_abs, db_abs))
         if not pair_paths:
             raise RuntimeError("No pairs found for SimCol3D dataset.")
-        super().__init__(pair_paths, n_samples=n_samples, rng=rng)
+        # Try load intrinsics from first variant that has cam.txt
+        K = None
+        for vname in variants:
+            cam_path = self.ROOT / vname / "database" / "cam.txt"
+            if cam_path.exists():
+                vals = [float(v) for v in cam_path.read_text().strip().replace("\n", " ").split()]
+                if len(vals) >= 6:
+                    fx, fy, cx, cy = vals[0], vals[4], vals[2], vals[5]
+                    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
+                    break
+        super().__init__(pair_paths, n_samples=n_samples, rng=rng, camera_K=K)
 
 
 # -----------------------------------------------------------------------------
