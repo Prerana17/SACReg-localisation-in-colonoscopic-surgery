@@ -112,7 +112,8 @@ def build_optimizer(params, lr: float = 1e-4):
 
 def build_scheduler(optimizer: torch.optim.Optimizer):
     def lr_lambda(epoch):
-        return (epoch + 1) / 50.0 if epoch < 10 else 1.0
+        # actually call by the end of each batch instead of epoch for faster training.
+        return (epoch + 1) / 100.0 if epoch < 10 else 1.0 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 

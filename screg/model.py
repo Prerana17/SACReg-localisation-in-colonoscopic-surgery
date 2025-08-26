@@ -182,8 +182,8 @@ class ThreeDMixer(nn.Module):
     """Alternate image-level and point-level decoder blocks to fuse features."""
 
     def __init__(self,
-                 n_img_blocks: int = 4,
-                 n_pt_blocks: int = 3,
+                 n_img_blocks: int = 3,
+                 n_pt_blocks: int = 2,
                  embed_dim_img: int = 1024,
                  embed_dim_pt: int = 256,
                  num_heads: int = 12):
