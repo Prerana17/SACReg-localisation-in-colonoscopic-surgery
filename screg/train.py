@@ -218,7 +218,7 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
             # Build GT / pred dicts for 3-D loss
             gt_dict = {
                 "pts3d": xyz_gt_rs.permute(0, 2, 3, 1),      # (B,H,W,3)
-                "valid_mask": torch.ones_like(tau, dtype=torch.bool),
+                "valid_mask": torch.isfinite(xyz_gt_rs).all(dim=1),
             }
             pred_dict = {"pts3d": pts_pred, "conf": tau}
 

@@ -153,7 +153,16 @@ class BasePairDataset(Dataset):
                     fx, fy, cx, cy = vals[0], vals[4], vals[2], vals[5]
                     self.camera_K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float32)
         if self.camera_K is not None:
-            sample["K"] = torch.from_numpy(self.camera_K).float()
+            # Scale intrinsics to match the resized image resolution
+            h_orig, w_orig = xyz_q.shape[:2]
+            sx = self.img_size[1] / w_orig
+            sy = self.img_size[0] / h_orig
+            K_scaled = self.camera_K.copy()
+            K_scaled[0, 0] *= sx
+            K_scaled[0, 2] *= sx
+            K_scaled[1, 1] *= sy
+            K_scaled[1, 2] *= sy
+            sample["K"] = torch.from_numpy(K_scaled).float()
         return sample
 
 

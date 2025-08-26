@@ -229,7 +229,7 @@ class SCRegNet(CroCoNet):
     def __init__(self,
                  output_mode: str = 'pts3d',
                  head_type: str = 'dpt',
-                 depth_mode: Tuple[str, float, float] = ('exp', -float('inf'), float('inf')),
+                 depth_mode: Tuple[str, float, float] = ('linear', -float('inf'), float('inf')),
                  conf_mode: Tuple[str, float, float] = ('exp', 1, float('inf')),
                  has_conf: bool = True,
                  **croco_kwargs):
