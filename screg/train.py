@@ -110,10 +110,17 @@ def build_optimizer(params, lr: float = 1e-4):
     return torch.optim.AdamW(params, lr=lr, betas=(0.9, 0.95), weight_decay=0.05)
 
 
-def build_scheduler(optimizer: torch.optim.Optimizer):
-    def lr_lambda(epoch):
-        # actually call by the end of each batch instead of epoch for faster training.
-        return (epoch + 1) / 100.0 if epoch < 10 else 1.0 
+def build_scheduler(optimizer: torch.optim.Optimizer, warmup_steps: int = 500):
+    """Return a LambdaLR that performs *batch-level* linear warm-up.
+
+    `scheduler.step()` must be called **per batch** (as in `train_one_epoch`).
+    The learning-rate factor ramps linearly from 1/warmup_steps to 1 during
+    the first `warmup_steps` updates, then stays at 1 thereafter.
+    """
+    def lr_lambda(step: int):
+        # `LambdaLR` passes in an internal counter (here interpreted as batch step)
+        return float(step + 1) / warmup_steps if step < warmup_steps else 1.0
+
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
@@ -175,7 +182,7 @@ def pose_eval(pts3d_pred: torch.Tensor, conf: torch.Tensor, K: torch.Tensor, pos
 # Training loop
 # -----------------------------------------------------------------------------
 
-def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, scaler, device, epoch, *, writer: SummaryWriter, val_interval: int, out_dir: Path, step_offset: int = 0):
+def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, scaler, device, epoch, *, writer: SummaryWriter, val_interval: int, out_dir: Path, step_offset: int = 0, val_loader: DataLoader | None = None):
     """Train model for one epoch and log to tensorboard.
 
     Returns final global step index and last (trans_err, rot_err).
@@ -184,6 +191,8 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
     loss_fn = ConfLoss_World(Regr3D_World(L21))
     model.train()
     total_loss = 0.0
+    # Prepare iterator over validation loader if provided
+    val_iter = iter(val_loader) if val_loader is not None else None
     pbar = tqdm(loader, desc=f"Epoch {epoch}", leave=False)
     step = step_offset
     last_trans_err = float('nan')
@@ -233,19 +242,54 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
         total_loss += loss.item() * B
         writer.add_scalar("train/L21_loss", loss.item(), global_step=step)
 
-        # Validation pose error every val_interval steps if K & pose provided
-        if (step % val_interval == 0) and ("K" in batch and "query_pose" in batch):
+        # Validation using external val_loader every val_interval steps
+        if (step % val_interval == 0) and val_iter is not None:
+            was_training = model.training
+            model.eval()
             with torch.no_grad():
-                pts3d_cpu = pts_pred[0].detach().cpu()  # (H,W,3)
-                conf_cpu = tau[0].detach().cpu()
-                K_cpu = batch["K"][0].cpu()
-                pose_gt = batch["query_pose"][0]
-                if isinstance(pose_gt, torch.Tensor):
-                    pose_gt = pose_gt.cpu().numpy()
-                trans_err, rot_err = pose_eval(pts3d_cpu, conf_cpu, K_cpu, pose_gt)
-                last_trans_err, last_rot_err = trans_err, rot_err
-                writer.add_scalar("val/trans_err", trans_err, global_step=step)
-                writer.add_scalar("val/rot_err", rot_err, global_step=step)
+                try:
+                    val_batch = next(val_iter)
+                except StopIteration:
+                    val_iter = iter(val_loader)
+                    val_batch = next(val_iter)
+
+                # Move tensors to device
+                for k, v in val_batch.items():
+                    if torch.is_tensor(v):
+                        val_batch[k] = v.to(device, non_blocking=True)
+
+                v_query_img = val_batch["query_img"]
+                v_db_img = val_batch["db_img"]
+                v_uvxyz = val_batch["uvxyz"]
+
+                v_outputs = model(v_query_img, v_db_img, v_uvxyz)
+                v_pts_pred = v_outputs["pts3d"]
+                v_tau = v_outputs["conf"]
+
+                B_val = v_pts_pred.shape[0]
+                n_eval = min(10, B_val)
+                sel_idx = torch.randperm(B_val, device=v_pts_pred.device)[:n_eval]
+                trans_err_list, rot_err_list = [], []
+                for idx in sel_idx:
+                    pts3d_cpu = v_pts_pred[idx].detach().cpu()
+                    conf_cpu = v_tau[idx].detach().cpu()
+                    if "K" not in val_batch or "query_pose" not in val_batch:
+                        continue
+                    K_cpu = val_batch["K"][idx].cpu()
+                    pose_gt = val_batch["query_pose"][idx]
+                    if isinstance(pose_gt, torch.Tensor):
+                        pose_gt = pose_gt.cpu().numpy()
+                    t_err, r_err = pose_eval(pts3d_cpu, conf_cpu, K_cpu, pose_gt)
+                    trans_err_list.append(t_err)
+                    rot_err_list.append(r_err)
+                if trans_err_list:
+                    last_trans_err = float(np.nanmean(trans_err_list))
+                    last_rot_err = float(np.nanmean(rot_err_list))
+                    writer.add_scalar("val/trans_err", last_trans_err, global_step=step)
+                    writer.add_scalar("val/rot_err", last_rot_err, global_step=step)
+            # restore training mode
+            if was_training:
+                model.train()
 
         pbar.set_postfix(loss=f"{loss.item():.4f}")
 
@@ -288,8 +332,12 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
         out_dir = out_dir / name
     os.makedirs(out_dir, exist_ok=True)
 
-    ds = SimCol3DDataset(top_k=1, n_samples=256)
+    ds = SimCol3DDataset(top_k=1, n_samples=256, variants=("SyntheticColon_I", "SyntheticColon_II"))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, collate_fn=simcol3d_collate_fn)
+
+    # Validation dataset from SyntheticColon_III
+    val_ds = SimCol3DDataset(top_k=1, n_samples=256, variants=("SyntheticColon_III",))
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, collate_fn=simcol3d_collate_fn)
 
     # Create model and optionally load pretrained weights
     if ckpt_path:
@@ -326,7 +374,7 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
     for epoch in range(epochs):
         global_step, avg_loss, last_trans_err, last_rot_err = train_one_epoch(
             model, loader, optimizer, scheduler, scaler, device, epoch,
-            writer=writer, val_interval=val_interval, out_dir=Path(out_dir), step_offset=global_step)
+            writer=writer, val_interval=val_interval, out_dir=Path(out_dir), step_offset=global_step, val_loader=val_loader)
         log_str = f"{datetime.now().isoformat()}\tEpoch {epoch:03d}\tloss={avg_loss:.6f}"
         print(log_str)
         with open(log_path, "a", encoding="utf-8") as f_log:
