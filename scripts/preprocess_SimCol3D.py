@@ -252,6 +252,10 @@ def generate_world_coords(debug: bool = False) -> None:
         If True, only process first 20 objects in each frame folder.
     """
 
+    # Fixed intrinsics (pixels) per SimCol3D reference
+    fx, cx = 227.6, 227.6
+    fy, cy = 237.5, 237.5
+
     variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
     subsets = ["database", "query"]
 
@@ -260,84 +264,72 @@ def generate_world_coords(debug: bool = False) -> None:
             subset_root = PROCESSED_ROOT / colon_name / subset
             if not subset_root.exists():
                 continue
-            cam_file = subset_root / "cam.txt"
-            if not cam_file.exists():
-                print(f"[generate_world_coords] Missing {cam_file}")
-                continue
-            fx, fy, cx, cy = _load_intrinsics(cam_file)
 
             for frames_dir in subset_root.glob("Frames_*"):
                 pose_files = sorted(frames_dir.glob("*.pose.txt"))
                 if not pose_files:
                     continue
-                
-                # Limit to first 20 files if debug mode
+
+                # Optional: limit number of frames if debug. No spatial downsampling.
                 if debug:
                     pose_files = pose_files[:20]
 
                 for pose_path in pose_files:
-                    idx = pose_path.stem.split(".")[0]  # 0000
+                    idx = pose_path.stem.split(".")[0]  # e.g., 0000
                     depth_path = frames_dir / f"{idx}.depth.png"
                     if not depth_path.exists():
                         continue
+
                     xyz_out = frames_dir / f"{idx}.xyz.npy"
-                    if xyz_out.exists():
-                        xyz_out.unlink()  # overwrite existing
 
-                    # Read depth image and convert to metres (0–0.20 m range)
+                    # Load depth and convert to centimeters (0-20 cm)
                     depth_raw = np.array(Image.open(depth_path))
-                    depth_m = depth_raw / 256 / 255 * 0.20  # 0–0.20 m
+                    depth_cm = depth_raw / 256.0 / 255.0 * 20.0  # in cm
 
-                    # Convert to torch tensor for processing
-                    depth_tensor = torch.tensor(depth_m.reshape((1, *depth_m.shape))).float()
-                    
-                    # Build intrinsics matrix
-                    intrinsics = np.eye(3, dtype=np.float32)
-                    intrinsics[0, 0] = fx
-                    intrinsics[0, 2] = cx
-                    intrinsics[1, 1] = fy
-                    intrinsics[1, 2] = cy
-                    intrinsics_inv = torch.tensor(np.linalg.inv(intrinsics)).float()
-                    
-                    # Convert to camera coordinates
-                    cam_coords = pixel2cam(depth_tensor, intrinsics_inv)
-                    cam_coords_flat = cam_coords.reshape(1, 3, -1).numpy()
+                    # Build intrinsics and inverse (torch tensors)
+                    K = np.eye(3, dtype=np.float32)
+                    K[0, 0] = fx; K[0, 2] = cx
+                    K[1, 1] = fy; K[1, 2] = cy
+                    K_inv = torch.tensor(np.linalg.inv(K)).float()
 
-                    # Load pose
+                    # Project pixels to camera coordinates (in cm)
+                    h, w = depth_cm.shape
+                    depth_tensor = torch.tensor(depth_cm.reshape((1, h, w))).float()
+                    cam_coords = pixel2cam(depth_tensor, K_inv)  # [1,3,H,W]
+                    cam_coords_flat = cam_coords.reshape(1, 3, -1).numpy()  # (1,3,N), in cm
+
+                    # Load pose: tx ty tz (cm), qx qy qz qw
                     vals = np.fromstring(pose_path.read_text(), sep=" ")
                     if vals.size != 7:
                         print(f"[generate_world_coords] Unexpected pose format: {pose_path}")
                         continue
-                    
-                    # Pose: translation in cm, rotation quaternion (world→camera)
                     t_cm = vals[:3]
-                    rotations = vals[3:]
+                    quat = vals[3:]
 
-                    # Convert translation to metres
-                    t_m = t_cm * 0.01
+                    # Rotation (right-handed assumption in scipy); dataset is left-handed
+                    R_mat = R.from_quat(quat).as_matrix()  # (3,3)
 
-                    # Rotation matrix (world→camera)
-                    R_wc = _quat_to_rotmat(rotations)
+                    # Compose 4x4 pose matrix with cm translation
+                    Pi = np.eye(4, dtype=np.float32)
+                    Pi[:3, :3] = R_mat.astype(np.float32)
+                    Pi[:3, 3] = t_cm.astype(np.float32)
 
-                    # Invert to get camera→world
-                    R_cw = R_wc.T
-                    t_cw = -R_cw @ t_m.reshape(3, 1)
+                    # Left-handed to right-handed conversion via TM @ Pi @ TM
+                    TM = np.eye(4, dtype=np.float32)
+                    TM[1, 1] = -1.0
+                    Pi = TM @ Pi @ TM
 
-                    # Apply left-handed→right-handed conversion
-                    TM = np.diag([1, -1, 1], k=0).astype(np.float32)
-                    R_cw = TM @ R_cw @ TM
-                    t_cw = TM @ t_cw
+                    rot_gt = Pi[:3, :3]  # (3,3)
+                    tr_gt = Pi[:3, 3:4]  # (3,1), in cm
 
-                    rot_gt = R_cw
-                    tr_gt = t_cw
-                    
-                    # Transform to world coordinates
-                    cloud_world = _cam_to_world(cam_coords_flat[0], rot_gt, tr_gt)
-                    
-                    # Reshape back to image format (already in metres)
-                    h, w = depth_m.shape
-                    xyz_world = cloud_world.T.reshape(h, w, 3)
-                    np.save(xyz_out, xyz_world)
+                    # Camera to world transform in cm
+                    cloud_world_cm = rot_gt @ cam_coords_flat + tr_gt  # (1,3,N) via broadcasting
+
+                    # Reshape to (H,W,3) and convert to meters only when saving
+                    xyz_world_cm = cloud_world_cm.transpose(0, 2, 1).reshape(h, w, 3)
+                    xyz_world_m = xyz_world_cm / 100.0
+
+                    np.save(xyz_out, xyz_world_m)
 
                 print(f"[generate_world_coords] Finished {frames_dir}")
 

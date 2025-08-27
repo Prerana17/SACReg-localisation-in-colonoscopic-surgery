@@ -43,13 +43,13 @@ def create_camera_frustum(position, rotation_matrix, scale=0.05, color='red'):
     color: 视锥颜色
     """
     # 定义相机坐标系下的视锥顶点（简化的金字塔形状）
-    # 相机朝向-Z方向
+    # 相机朝向 +Z 方向（与点云投影一致）
     frustum_points = np.array([
         [0, 0, 0],           # 相机中心
-        [-scale, -scale, -2*scale],  # 左下
-        [scale, -scale, -2*scale],   # 右下
-        [scale, scale, -2*scale],    # 右上
-        [-scale, scale, -2*scale],   # 左上
+        [-scale, -scale,  2*scale],  # 左下
+        [ scale, -scale,  2*scale],  # 右下
+        [ scale,  scale,  2*scale],  # 右上
+        [-scale,  scale,  2*scale],  # 左上
     ])
     
     # 将视锥点转换到世界坐标系
@@ -93,13 +93,25 @@ def load_pose_data(pose_file):
     
     # 位置：厘米转米
     position = np.array([float(data[0]), float(data[1]), float(data[2])]) / 100.0
-    
-    # 四元数 [w, x, y, z]
-    quaternion = np.array([float(data[3]), float(data[4]), float(data[5]), float(data[6])])
-    
+
+    # 输入pose文件顺序为 qx qy qz qw，需要重排为 [w, x, y, z]
+    qx, qy, qz, qw = float(data[3]), float(data[4]), float(data[5]), float(data[6])
+    quaternion = np.array([qw, qx, qy, qz])
+
     # 转换为旋转矩阵
     rotation_matrix = quaternion_to_rotation_matrix(quaternion)
-    
+
+    # 与预处理保持一致：在4x4位姿上应用 TM = diag([1,-1,1,1])
+    Pi = np.eye(4)
+    Pi[:3, :3] = rotation_matrix
+    Pi[:3, 3] = position
+
+    TM = np.diag([1.0, -1.0, 1.0, 1.0])
+    Pi = TM @ Pi @ TM
+
+    rotation_matrix = Pi[:3, :3]
+    position = Pi[:3, 3]
+
     return position, rotation_matrix
 
 
