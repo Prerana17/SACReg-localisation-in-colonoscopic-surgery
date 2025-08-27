@@ -160,7 +160,7 @@ def create_visualization(data_dir, frame_indices, downsample_factor=10):
         position, rotation_matrix = load_pose_data(pose_file)
         
         # 创建相机视锥
-        frustum = create_camera_frustum(position, rotation_matrix, scale=0.02, color=color)
+        frustum = create_camera_frustum(position, rotation_matrix, scale=0.001, color=color)
         frustum.name = f'Camera {frame_str}'
         fig.add_trace(frustum)
         

@@ -163,7 +163,7 @@ def parse_and_rename(debug: bool = False) -> None:
                     min_len = len(pos_lines)
 
                 # Limit processing to first 20 objects if debug mode
-                process_len = min(20, min_len) if debug else min_len
+                process_len = min(100, min_len) if debug else min_len
                 
                 for idx in range(process_len):
                     pos_vals = pos_lines[idx]
@@ -177,8 +177,8 @@ def parse_and_rename(debug: bool = False) -> None:
                 rgb_files = sorted(frames_dir.glob("FrameBuffer_*.png"))
                 
                 if debug:
-                    depth_files = depth_files[:20]
-                    rgb_files = rgb_files[:20]
+                    depth_files = depth_files[:100]
+                    rgb_files = rgb_files[:100]
                 
                 for img_path in depth_files:
                     num = img_path.stem.split("_")[-1]
@@ -239,7 +239,8 @@ def _is_left_handed(Rm: np.ndarray) -> bool:
 
 
 def _convert_left_to_right(T: np.ndarray) -> np.ndarray:
-    S = np.diag([1, 1, -1, 1]).astype(T.dtype)
+    # Keep consistent with generate_world_coords: TM = diag([1, -1, 1, 1])
+    S = np.diag([1, -1, 1, 1]).astype(T.dtype)
     return S @ T @ S
 
 
@@ -272,7 +273,7 @@ def generate_world_coords(debug: bool = False) -> None:
 
                 # Optional: limit number of frames if debug. No spatial downsampling.
                 if debug:
-                    pose_files = pose_files[:20]
+                    pose_files = pose_files[:100]
 
                 for pose_path in pose_files:
                     idx = pose_path.stem.split(".")[0]  # e.g., 0000
@@ -364,7 +365,7 @@ def generate_embeddings(device: str = "cuda", debug: bool = False) -> None:
                 
                 # Limit to first 20 files if debug mode
                 if debug:
-                    rgb_files = rgb_files[:20]
+                    rgb_files = rgb_files[:100]
                     
                 for rgb_path in rgb_files:
                     # Remove the trailing '.rgb' from the stem for cleaner naming
@@ -430,7 +431,7 @@ def create_pairs(top_k: int = 50, debug: bool = False) -> None:
             
             embed_files = []
             for frame_name, files in embed_files_by_frame.items():
-                embed_files.extend(sorted(files)[:20])
+                embed_files.extend(sorted(files)[:100])
         
         for embed_path in embed_files:
             emb = np.load(embed_path).astype(np.float32)
@@ -462,7 +463,7 @@ def create_pairs(top_k: int = 50, debug: bool = False) -> None:
                 
                 query_embed_paths = []
                 for frame_name, files in query_files_by_frame.items():
-                    query_embed_paths.extend(sorted(files)[:20])
+                    query_embed_paths.extend(sorted(files)[:100])
             
             for q_embed_path in tqdm(query_embed_paths, desc=f"{colon_name} queries"):
                 q_emb = np.load(q_embed_path).astype(np.float32)
