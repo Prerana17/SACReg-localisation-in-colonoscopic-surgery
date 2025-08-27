@@ -113,13 +113,18 @@ def split_dataset() -> None:
                         print(f"[split_dataset] Missing metadata {src_meta}")
 
 
-def parse_and_rename() -> None:
+def parse_and_rename(debug: bool = False) -> None:
     """Placeholder for parsing metadata files and renaming frames.
 
     Expected tasks (to be implemented later):
     - Read trajectory/pose information.
     - Rename images or folders into a unified naming convention.
     - Update metadata accordingly.
+    
+    Parameters
+    ----------
+    debug : bool
+        If True, only process first 20 objects in each frame folder.
     """
 
     # Iterate over processed colon variants and subsets
@@ -157,20 +162,30 @@ def parse_and_rename() -> None:
                 else:
                     min_len = len(pos_lines)
 
-                for idx in range(min_len):
+                # Limit processing to first 20 objects if debug mode
+                process_len = min(20, min_len) if debug else min_len
+                
+                for idx in range(process_len):
                     pos_vals = pos_lines[idx]
                     quat_vals = quat_lines[idx]
                     pose_line = f"{pos_vals} {quat_vals}\n"
                     out_name = f"{idx:04d}.pose.txt"
                     (frames_dir / out_name).write_text(pose_line)
 
-                # Rename image files
-                for img_path in frames_dir.glob("Depth_*.png"):
+                # Rename image files (limit to first 20 if debug mode)
+                depth_files = sorted(frames_dir.glob("Depth_*.png"))
+                rgb_files = sorted(frames_dir.glob("FrameBuffer_*.png"))
+                
+                if debug:
+                    depth_files = depth_files[:20]
+                    rgb_files = rgb_files[:20]
+                
+                for img_path in depth_files:
                     num = img_path.stem.split("_")[-1]
                     new_path = frames_dir / f"{num}.depth.png"
                     if not new_path.exists():
                         img_path.rename(new_path)
-                for img_path in frames_dir.glob("FrameBuffer_*.png"):
+                for img_path in rgb_files:
                     num = img_path.stem.split("_")[-1]
                     new_path = frames_dir / f"{num}.rgb.png"
                     if not new_path.exists():
@@ -179,7 +194,7 @@ def parse_and_rename() -> None:
                 print(f"[parse_and_rename] Processed {frames_dir}")
 
     # After renaming and pose generation, also produce xyz world npy files
-    generate_world_coords()
+    generate_world_coords(debug=debug)
 
 def _load_intrinsics(cam_txt: Path) -> tuple[float, float, float, float]:
     vals = [float(v) for v in cam_txt.read_text().strip().replace("\n", " ").split()]
@@ -189,24 +204,30 @@ def _load_intrinsics(cam_txt: Path) -> tuple[float, float, float, float]:
     return fx, fy, cx, cy
 
 
-def _depth_to_cam(depth: np.ndarray, fx: float, fy: float, cx: float, cy: float) -> np.ndarray:
-    h, w = depth.shape
-    ys, xs = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-    zs = depth.astype(np.float32)
-    xs_cam = (xs - cx) / fx * zs
-    ys_cam = (ys - cy) / fy * zs
-    xyz = np.stack([xs_cam, ys_cam, zs], axis=2)
-    xyz[zs <= 0] = np.nan
-    return xyz
+def set_id_grid(depth: torch.Tensor) -> torch.Tensor:
+    """Generate pixel coordinate grid."""
+    b, h, w = depth.size()
+    i_range = torch.arange(0, h).view(1, h, 1).expand(
+        1, h, w).type_as(depth)  # [1, H, W]
+    j_range = torch.arange(0, w).view(1, 1, w).expand(
+        1, h, w).type_as(depth)  # [1, H, W]
+    ones = torch.ones(1, h, w).type_as(depth)
+    return torch.stack((j_range, i_range, ones), dim=1)  # [1, 3, H, W]
 
 
-def _cam_to_world(xyz_cam: np.ndarray, T: np.ndarray) -> np.ndarray:
-    orig_shape = xyz_cam.shape
-    pts = xyz_cam.reshape(-1, 3)
-    Rm = T[:3, :3]
-    t = T[:3, 3]
-    pts_w = pts @ Rm.T + t
-    return pts_w.reshape(orig_shape)
+def pixel2cam(depth: torch.Tensor, intrinsics_inv: torch.Tensor) -> torch.Tensor:
+    """Convert depth map to camera coordinates using inverse intrinsics."""
+    b, h, w = depth.size()
+    pixel_coords = set_id_grid(depth)
+    current_pixel_coords = pixel_coords[:, :, :h, :w].expand(
+        b, 3, h, w).reshape(b, 3, -1)  # [B, 3, H*W]
+    cam_coords = (intrinsics_inv @ current_pixel_coords).reshape(b, 3, h, w)
+    return cam_coords * depth.unsqueeze(1)
+
+
+def _cam_to_world(cam_coords_flat: np.ndarray, rot_mat: np.ndarray, trans_vec: np.ndarray) -> np.ndarray:
+    """Transform camera coordinates to world coordinates."""
+    return rot_mat @ cam_coords_flat + trans_vec
 
 
 def _quat_to_rotmat(q: np.ndarray) -> np.ndarray:
@@ -222,8 +243,14 @@ def _convert_left_to_right(T: np.ndarray) -> np.ndarray:
     return S @ T @ S
 
 
-def generate_world_coords() -> None:
-    """Generate dense xyz world coordinate .npy for each depth image."""
+def generate_world_coords(debug: bool = False) -> None:
+    """Generate dense xyz world coordinate .npy for each depth image.
+    
+    Parameters
+    ----------
+    debug : bool
+        If True, only process first 20 objects in each frame folder.
+    """
 
     variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
     subsets = ["database", "query"]
@@ -243,6 +270,10 @@ def generate_world_coords() -> None:
                 pose_files = sorted(frames_dir.glob("*.pose.txt"))
                 if not pose_files:
                     continue
+                
+                # Limit to first 20 files if debug mode
+                if debug:
+                    pose_files = pose_files[:20]
 
                 for pose_path in pose_files:
                     idx = pose_path.stem.split(".")[0]  # 0000
@@ -253,39 +284,74 @@ def generate_world_coords() -> None:
                     if xyz_out.exists():
                         xyz_out.unlink()  # overwrite existing
 
-                    # Read depth image and convert to metres (0–0.20 m range).
-                    depth_raw = imageio.imread(depth_path)
-                    if depth_raw.dtype == np.uint16:
-                        depth_norm = depth_raw.astype(np.float32) / 65535.0  # 0–1
-                    else:  # fallback for 8-bit legacy images
-                        depth_norm = depth_raw.astype(np.float32) / 255.0
-                    depth_m = depth_norm * 0.20
+                    # Read depth image and convert to metres (0–0.20 m range)
+                    depth_raw = np.array(Image.open(depth_path))
+                    depth_m = depth_raw / 256 / 255 * 0.20  # 0–0.20 m
 
-                    xyz_cam = _depth_to_cam(depth_m, fx, fy, cx, cy)
+                    # Convert to torch tensor for processing
+                    depth_tensor = torch.tensor(depth_m.reshape((1, *depth_m.shape))).float()
+                    
+                    # Build intrinsics matrix
+                    intrinsics = np.eye(3, dtype=np.float32)
+                    intrinsics[0, 0] = fx
+                    intrinsics[0, 2] = cx
+                    intrinsics[1, 1] = fy
+                    intrinsics[1, 2] = cy
+                    intrinsics_inv = torch.tensor(np.linalg.inv(intrinsics)).float()
+                    
+                    # Convert to camera coordinates
+                    cam_coords = pixel2cam(depth_tensor, intrinsics_inv)
+                    cam_coords_flat = cam_coords.reshape(1, 3, -1).numpy()
 
                     # Load pose
                     vals = np.fromstring(pose_path.read_text(), sep=" ")
                     if vals.size != 7:
                         print(f"[generate_world_coords] Unexpected pose format: {pose_path}")
                         continue
-                    # SavedPosition translations are in centimetres → convert to metres.
-                    t_vec = vals[:3] * 0.01
-                    q = vals[3:]
-                    Rm = _quat_to_rotmat(q)
-                    T = np.eye(4, dtype=np.float32)
-                    T[:3, :3] = Rm
-                    T[:3, 3] = t_vec
-                    if _is_left_handed(Rm):
-                        T = _convert_left_to_right(T)
+                    
+                    # Pose: translation in cm, rotation quaternion (world→camera)
+                    t_cm = vals[:3]
+                    rotations = vals[3:]
 
-                    xyz_world = _cam_to_world(xyz_cam, T)
+                    # Convert translation to metres
+                    t_m = t_cm * 0.01
+
+                    # Rotation matrix (world→camera)
+                    R_wc = _quat_to_rotmat(rotations)
+
+                    # Invert to get camera→world
+                    R_cw = R_wc.T
+                    t_cw = -R_cw @ t_m.reshape(3, 1)
+
+                    # Apply left-handed→right-handed conversion
+                    TM = np.diag([1, -1, 1], k=0).astype(np.float32)
+                    R_cw = TM @ R_cw @ TM
+                    t_cw = TM @ t_cw
+
+                    rot_gt = R_cw
+                    tr_gt = t_cw
+                    
+                    # Transform to world coordinates
+                    cloud_world = _cam_to_world(cam_coords_flat[0], rot_gt, tr_gt)
+                    
+                    # Reshape back to image format (already in metres)
+                    h, w = depth_m.shape
+                    xyz_world = cloud_world.T.reshape(h, w, 3)
                     np.save(xyz_out, xyz_world)
 
                 print(f"[generate_world_coords] Finished {frames_dir}")
 
 
-def generate_embeddings(device: str = "cuda") -> None:
-    """Generate DreamSim Dino embeddings for each RGB image and save as .embed.npy"""
+def generate_embeddings(device: str = "cuda", debug: bool = False) -> None:
+    """Generate DreamSim Dino embeddings for each RGB image and save as .embed.npy
+    
+    Parameters
+    ----------
+    device : str
+        Device to run the model on (cuda or cpu).
+    debug : bool
+        If True, only process first 20 objects in each frame folder.
+    """
 
     model, preprocess = dreamsim(pretrained=True, dreamsim_type="dino_vitb16")
     model.to(device)
@@ -303,6 +369,11 @@ def generate_embeddings(device: str = "cuda") -> None:
                 rgb_files = sorted(frames_dir.glob("*.rgb.png"))
                 if not rgb_files:
                     continue
+                
+                # Limit to first 20 files if debug mode
+                if debug:
+                    rgb_files = rgb_files[:20]
+                    
                 for rgb_path in rgb_files:
                     # Remove the trailing '.rgb' from the stem for cleaner naming
                     name_no_rgb = rgb_path.stem.replace(".rgb", "")
@@ -317,7 +388,7 @@ def generate_embeddings(device: str = "cuda") -> None:
                 print(f"[generate_embeddings] Finished {frames_dir}")
 
 
-def create_pairs(top_k: int = 50) -> None:
+def create_pairs(top_k: int = 50, debug: bool = False) -> None:
     """Generate top-k retrieval mapping for each SyntheticColon variant.
 
     For every query RGB image, find the *top_k* most similar database images
@@ -329,6 +400,13 @@ def create_pairs(top_k: int = 50) -> None:
 
     Paths are relative to ``data/processed/SimCol3D`` so they can be joined
     easily later.
+    
+    Parameters
+    ----------
+    top_k : int
+        Number of top similar images to retrieve.
+    debug : bool
+        If True, only process first 20 objects in each frame folder.
     """
 
     variants = [
@@ -347,7 +425,22 @@ def create_pairs(top_k: int = 50) -> None:
         # Load database embeddings once into memory
         db_embs: list[np.ndarray] = []
         db_paths: list[Path] = []
-        for embed_path in db_root.glob("Frames_*/*.embed.npy"):
+        embed_files = list(db_root.glob("Frames_*/*.embed.npy"))
+        
+        # Limit to first 20 files per frame folder if debug mode
+        if debug:
+            embed_files_by_frame = {}
+            for embed_path in embed_files:
+                frame_name = embed_path.parent.name
+                if frame_name not in embed_files_by_frame:
+                    embed_files_by_frame[frame_name] = []
+                embed_files_by_frame[frame_name].append(embed_path)
+            
+            embed_files = []
+            for frame_name, files in embed_files_by_frame.items():
+                embed_files.extend(sorted(files)[:20])
+        
+        for embed_path in embed_files:
             emb = np.load(embed_path).astype(np.float32)
             norm = np.linalg.norm(emb)
             if norm == 0:
@@ -365,6 +458,20 @@ def create_pairs(top_k: int = 50) -> None:
         out_path = processed_root / colon_name / f"pairs_top{top_k}.txt"
         with out_path.open("w") as fout:
             query_embed_paths = list(q_root.glob("Frames_*/*.embed.npy"))
+            
+            # Limit to first 20 files per frame folder if debug mode
+            if debug:
+                query_files_by_frame = {}
+                for q_embed_path in query_embed_paths:
+                    frame_name = q_embed_path.parent.name
+                    if frame_name not in query_files_by_frame:
+                        query_files_by_frame[frame_name] = []
+                    query_files_by_frame[frame_name].append(q_embed_path)
+                
+                query_embed_paths = []
+                for frame_name, files in query_files_by_frame.items():
+                    query_embed_paths.extend(sorted(files)[:20])
+            
             for q_embed_path in tqdm(query_embed_paths, desc=f"{colon_name} queries"):
                 q_emb = np.load(q_embed_path).astype(np.float32)
                 q_norm = np.linalg.norm(q_emb)
@@ -384,20 +491,22 @@ def create_pairs(top_k: int = 50) -> None:
 # Command-line interface
 # -----------------------------------------------------------------------------
 
-def main(steps: List[str] | None = None) -> None:
+def main(steps: List[str] | None = None, debug: bool = False) -> None:
     """Run selected preprocessing steps.
 
     Parameters
     ----------
     steps : list[str] | None
         Names of steps to run. If *None*, run all in order.
+    debug : bool
+        If True, only process first 20 objects in each frame folder.
     """
 
     pipeline = {
         "split": split_dataset,
-        "parse_rename": parse_and_rename,
-        "embed": generate_embeddings,
-        "pairs": create_pairs,
+        "parse_rename": lambda: parse_and_rename(debug=debug),
+        "embed": lambda: generate_embeddings(debug=debug),
+        "pairs": lambda: create_pairs(debug=debug),
     }
 
     if steps is None:
@@ -416,7 +525,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="SimCol3D preprocessing pipeline")
-    parser.add_argument("steps", nargs="*", help="Steps to execute (split, parse_rename, pairs)")
+    parser.add_argument("steps", nargs="*", help="Steps to execute (split, parse_rename, embed, pairs)")
+    parser.add_argument("--debug", action="store_true", help="Debug mode: only process first 20 objects per frame folder")
     args = parser.parse_args()
 
-    main(args.steps or None)
+    main(args.steps or None, debug=args.debug)

@@ -221,41 +221,41 @@
 # -----------------------------------------------------------------------------
 # SCRegNet + SimCol3D dataloader quick shape test
 # -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    import torch
-    from torch.utils.data import DataLoader
-    from screg.datasets import SimCol3DDataset, simcol3d_collate_fn
-    from screg.model import SCRegNet
+# if __name__ == "__main__":
+#     import torch
+#     from torch.utils.data import DataLoader
+#     from screg.datasets import SimCol3DDataset, simcol3d_collate_fn
+#     from screg.model import SCRegNet
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Small dataset sample for quick test
-    ds = SimCol3DDataset(top_k=50, n_samples=32)
-    loader = DataLoader(ds, batch_size=2, shuffle=False, collate_fn=simcol3d_collate_fn)
+#     # Small dataset sample for quick test
+#     ds = SimCol3DDataset(top_k=50, n_samples=32)
+#     loader = DataLoader(ds, batch_size=2, shuffle=False, collate_fn=simcol3d_collate_fn)
 
-    # model = SCRegNet(head_type="dpt", output_mode="pts3d", has_conf=True, img_size=(512, 512), dec_depth=12)
-    # model.to(device)
-    # model.eval()
-    model = SCRegNet.load_from_dust3r_weight(
-        ckpt_path="/home/tim/screg/screg/weight/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
-        head_type="dpt",
-        output_mode="pts3d",
-        # has_conf=True,
-        show_mismatch=True)
-    model.to(device)
-    model.eval()
-    batch = next(iter(loader))
-    q_img = batch["query_img"].to(device)
-    db_img = batch["db_img"].to(device)
-    uvxyz = batch["uvxyz"].to(device)
+#     # model = SCRegNet(head_type="dpt", output_mode="pts3d", has_conf=True, img_size=(512, 512), dec_depth=12)
+#     # model.to(device)
+#     # model.eval()
+#     model = SCRegNet.load_from_dust3r_weight(
+#         ckpt_path="/home/tim/screg/screg/weight/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
+#         head_type="dpt",
+#         output_mode="pts3d",
+#         # has_conf=True,
+#         show_mismatch=True)
+#     model.to(device)
+#     model.eval()
+#     batch = next(iter(loader))
+#     q_img = batch["query_img"].to(device)
+#     db_img = batch["db_img"].to(device)
+#     uvxyz = batch["uvxyz"].to(device)
 
-    with torch.no_grad():
-        out = model(q_img, db_img, uvxyz)
-    for k, v in out.items():
-        if torch.is_tensor(v):
-            print(f"{k}: {tuple(v.shape)}")
-        else:
-            print(f"{k}: {type(v)}")
+#     with torch.no_grad():
+#         out = model(q_img, db_img, uvxyz)
+#     for k, v in out.items():
+#         if torch.is_tensor(v):
+#             print(f"{k}: {tuple(v.shape)}")
+#         else:
+#             print(f"{k}: {type(v)}")
 
 
 
@@ -268,3 +268,17 @@ if __name__ == "__main__":
 # print('Checkpoint keys:', ckpt.keys())
 # print('\nargs:')
 # pprint.pprint(ckpt.get('args'))
+
+
+# import numpy as np, pathlib, sys
+# p=pathlib.Path('data/processed/SimCol3D/SyntheticColon_I/database/Frames_S10/0000.xyz.npy')
+# xyz=np.load(p)
+# print('shape', xyz.shape, 'dtype', xyz.dtype)
+
+import numpy as np, glob, os, random, sys
+file=glob.glob('data/processed/SimCol3D/SyntheticColon_I/database/Frames_S10/*.xyz.npy')[0]
+xyz=np.load(file, mmap_mode='r')
+pts=xyz.reshape(-1,3)
+pts=pts[~np.isnan(pts).any(axis=1)]
+print('min', pts.min(axis=0))
+print('max', pts.max(axis=0))
