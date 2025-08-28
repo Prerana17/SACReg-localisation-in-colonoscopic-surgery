@@ -76,11 +76,14 @@ class BasePairDataset(Dataset):
         if vals.size != 7:
             raise ValueError(f"Unexpected pose format: {pose_path}")
         t = vals[:3] * 0.01  # cm→m
+        t[1] *= -1.0
         q = vals[3:]
         Rm = R.from_quat(q).as_matrix().astype(np.float32)
         pose = np.eye(4, dtype=np.float32)
         pose[:3, :3] = Rm
         pose[:3, 3] = t
+        # print(rgb_path,pose)
+        # print()
         return pose
 
     def _load_xyz(self, rgb_path: Path) -> np.ndarray:

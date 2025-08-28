@@ -166,9 +166,28 @@ def parse_and_rename(debug: bool = False) -> None:
                 process_len = min(100, min_len) if debug else min_len
                 
                 for idx in range(process_len):
-                    pos_vals = pos_lines[idx]
-                    quat_vals = quat_lines[idx]
-                    pose_line = f"{pos_vals} {quat_vals}\n"
+                    # Read original left-handed translation (cm) and quaternion
+                    t_lh = np.fromstring(pos_lines[idx], sep=" ", dtype=np.float32)  # (3,)
+                    q_lh = np.fromstring(quat_lines[idx], sep=" ", dtype=np.float32)  # (4,)
+
+                    # Build 4×4 pose matrix in left-handed system
+                    T_lh = np.eye(4, dtype=np.float32)
+                    T_lh[:3, :3] = R.from_quat(q_lh).as_matrix().astype(np.float32)
+                    T_lh[:3, 3] = t_lh
+
+                    # Convert to right-handed system
+                    T_rh = _convert_left_to_right(T_lh)
+
+                    # Extract right-handed translation and quaternion
+                    t_rh = T_rh[:3, 3]
+                    q_rh = R.from_matrix(T_rh[:3, :3]).as_quat().astype(np.float32)
+
+                    # Compose pose line (right-handed)
+                    pose_line = (
+                        f"{t_rh[0]:.6f} {t_rh[1]:.6f} {t_rh[2]:.6f} "
+                        f"{q_rh[0]:.6f} {q_rh[1]:.6f} {q_rh[2]:.6f} {q_rh[3]:.6f}\n"
+                    )
+
                     out_name = f"{idx:04d}.pose.txt"
                     (frames_dir / out_name).write_text(pose_line)
 
@@ -328,6 +347,8 @@ def generate_world_coords(debug: bool = False) -> None:
 
                     # Reshape to (H,W,3) and convert to meters only when saving
                     xyz_world_cm = cloud_world_cm.transpose(0, 2, 1).reshape(h, w, 3)
+                    # Right-handed conversion: flip y-axis
+                    xyz_world_cm[..., 1] *= -1.0
                     xyz_world_m = xyz_world_cm / 100.0
 
                     np.save(xyz_out, xyz_world_m)
