@@ -24,6 +24,7 @@ from PIL import Image
 
 # Re-use harmonic frequencies from PointEmbed for consistency
 from .model import PointEmbed
+from .utils import create_normalized_uv_grid_numpy, phi_encode_xyz_numpy, compute_phi_frequencies
 
 __all__ = ["BasePairDataset", "SimCol3DDataset", "simcol3d_collate_fn"]
 
@@ -223,32 +224,24 @@ class SimCol3DDataset(BasePairDataset):
 # Helper φ-encoder producing 38-D features (pre-MLP)
 # -----------------------------------------------------------------------------
 class _Phi38Encoder:
-    """Vectorised NumPy implementation of φ-encoding without MLP."""
+    """统一的φ-编码实现 (NumPy版本)"""
 
-    def __init__(self, f1: float = 0.017903170262351338, gamma: float = 2.884031503126606, F: int = 6):
-        freqs = np.array([f1 * (gamma ** i) for i in range(F)], dtype=np.float32)  # (F,)
-        self.freqs = freqs[None, None, None, :]  # broadcastable to (H,W,1,F)
+    def __init__(self, f1: float = 31.4159, gamma: float = 2.884031503126606, F: int = 6):
+        # 使用统一的频率计算函数
+        self.frequencies = compute_phi_frequencies(f1, gamma, F)
 
     def encode_np(self, xyz: np.ndarray) -> np.ndarray:
         """Return φ-encoding channels first: (38,H,W) given xyz (H,W,3)."""
         h, w, _ = xyz.shape
-        # Compute uv grid first
-        uu = np.arange(w, dtype=np.float32)
-        vv = np.arange(h, dtype=np.float32)
-        u_grid, v_grid = np.meshgrid(uu, vv)  # (H,W)
-        u_n = 2.0 * u_grid / (w - 1) - 1.0
-        v_n = 2.0 * v_grid / (h - 1) - 1.0
-        uv = np.stack([u_n, v_n], axis=0)  # (2,H,W)
+        
+        # 使用统一的UV网格生成
+        uv = create_normalized_uv_grid_numpy(h, w)  # (2,H,W)
 
-        # xyz harmonic encoding
-        xyz_exp = xyz[:, :, :, None]  # (H,W,3,1)
-        angles = xyz_exp * self.freqs  # (H,W,3,F)
-        cos_part = np.cos(angles)
-        sin_part = np.sin(angles)
-        enc = np.concatenate([cos_part, sin_part], axis=3)  # (H,W,3,2F)
-        enc = enc.reshape(h, w, -1).transpose(2, 0, 1)  # (36,H,W)
+        # 使用统一的φ编码函数
+        xyz_encoded = phi_encode_xyz_numpy(xyz, self.frequencies)  # (H,W,36)
+        xyz_encoded = xyz_encoded.transpose(2, 0, 1)  # (36,H,W)
 
-        return np.concatenate([uv, enc], axis=0).astype(np.float32)  # (38,H,W)
+        return np.concatenate([uv, xyz_encoded], axis=0).astype(np.float32)  # (38,H,W)
 
 
 # -----------------------------------------------------------------------------

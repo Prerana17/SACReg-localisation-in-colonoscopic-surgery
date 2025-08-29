@@ -31,6 +31,7 @@ from croco.models.blocks import DecoderBlock
 
 # Local heads
 from .heads import head_factory
+from .utils import compute_phi_frequencies
 
 
 class PointEmbed(nn.Module):
@@ -49,15 +50,16 @@ class PointEmbed(nn.Module):
 
     def __init__(
         self,
-        f1: float = 0.017903170262351338,
+        f1: float = 31.4159,
         gamma: float = 2.884031503126606,
         F: int = 6,
         embed_dim: int = 256,
     ) -> None:
         super().__init__()
-        # Pre-compute and register harmonic frequencies (shape: [F]), 
+        # 使用统一的频率计算函数
         # Computed for 20cm level scene size and 1mm regression precision according paper
-        freqs = torch.tensor([f1 * (gamma ** i) for i in range(F)], dtype=torch.float32)
+        freqs_np = compute_phi_frequencies(f1, gamma, F)
+        freqs = torch.from_numpy(freqs_np)
         self.register_buffer("frequencies", freqs)
 
         input_dim = 2 + 3 * F * 2  # 38 when F=6
@@ -89,15 +91,9 @@ class PointEmbed(nn.Module):
         uv = pts2d3d[..., 0:2]  # (B, N, 2)
         xyz = pts2d3d[..., 2:5]  # (B, N, 3)
 
-        # Vectorised φ-encoding.
-        # Flatten xyz to (B*N*3,) then outer-product with frequencies (F,) -> (B*N*3, F)
-        xyz_flat = xyz.reshape(-1)
-        angles = torch.outer(xyz_flat, self.frequencies)  # radians
-        cos_comp = torch.cos(angles)
-        sin_comp = torch.sin(angles)
-        enc_flat = torch.cat([cos_comp, sin_comp], dim=-1)  # (B*N*3, 2F)
-        # Reshape back to (B, N, 3, 2F) then flatten last two dims -> (B, N, 6F)
-        enc_xyz = enc_flat.view(B, N, 3, -1).reshape(B, N, -1)
+        # 使用统一的φ编码函数
+        from .utils import phi_encode_xyz_torch
+        enc_xyz = phi_encode_xyz_torch(xyz, self.frequencies)  # (B, N, 36)
 
         # Concatenate (u, v)
         feat = torch.cat([uv, enc_xyz], dim=-1)  # (B, N, 38)

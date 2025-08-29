@@ -24,12 +24,13 @@ from .datasets import SimCol3DDataset, simcol3d_collate_fn
 from .model import SCRegNet, PointEmbed
 # --- Switched to direct 3-D regression ---
 from .losses import Regr3D_World, ConfLoss_World, L21
+from .utils import create_normalized_uv_grid_torch, phi_encode_xyz_torch, compute_phi_frequencies
 
 # -----------------------------------------------------------------------------
 # φ-encoding helper (vectorised torch) – matches PointEmbed 38-D scheme
 # (Deprecated: now regress XYZ directly; kept for reference)
 # -----------------------------------------------------------------------------
-F1_DEFAULT = 0.017903170262351338
+F1_DEFAULT = 31.4159
 GAMMA_DEFAULT = 2.884031503126606
 F_HARMONICS = 6  # ⇒ 38-D (2 + 3*F*2)
 
@@ -46,24 +47,20 @@ def encode_phi38(xyz: torch.Tensor, f1: float = F1_DEFAULT, gamma: float = GAMMA
     device = xyz.device
     dtype = xyz.dtype
 
-    # (1, F)
-    freqs = torch.tensor([f1 * (gamma ** i) for i in range(F_HARMONICS)], dtype=dtype, device=device)[None]
+    # 使用统一的频率计算
+    freqs_np = compute_phi_frequencies(f1, gamma, F_HARMONICS)
+    freqs = torch.from_numpy(freqs_np).to(device=device, dtype=dtype)
 
-    # Harmonic encoding xyz → (B, 3*2F, H, W)
-    xyz_exp = xyz.unsqueeze(2)  # (B,3,1,H,W)
-    ang = xyz_exp * freqs.view(1, 1, F_HARMONICS, 1, 1)
-    cos_part = torch.cos(ang)
-    sin_part = torch.sin(ang)
-    enc = torch.cat([cos_part, sin_part], dim=2)  # (B,3,2F,H,W)
-    enc = enc.flatten(1, 2)  # (B, 3*2F, H, W)
+    # 统一的UV网格生成
+    uv = create_normalized_uv_grid_torch(H, W, device=device, dtype=dtype)  # (2,H,W)
+    uv = uv.expand(B, -1, -1, -1)  # (B,2,H,W)
 
-    # Normalised uv grid (B,2,H,W)
-    u_lin = torch.linspace(-1.0, 1.0, W, device=device, dtype=dtype)
-    v_lin = torch.linspace(-1.0, 1.0, H, device=device, dtype=dtype)
-    v_grid, u_grid = torch.meshgrid(v_lin, u_lin, indexing="ij")
-    uv = torch.stack([u_grid, v_grid], dim=0).expand(B, -1, -1, -1)  # (B,2,H,W)
+    # φ编码 XYZ坐标
+    xyz_permuted = xyz.permute(0, 2, 3, 1)  # (B,H,W,3)
+    xyz_encoded = phi_encode_xyz_torch(xyz_permuted, freqs)  # (B,H,W,36)
+    xyz_encoded = xyz_encoded.permute(0, 3, 1, 2)  # (B,36,H,W)
 
-    return torch.cat([uv, enc], dim=1)  # (B,38,H,W)
+    return torch.cat([uv, xyz_encoded], dim=1)  # (B,38,H,W)
 
 
 # -----------------------------------------------------------------------------
@@ -179,7 +176,7 @@ def pose_eval(pts3d_pred: torch.Tensor, conf: torch.Tensor, K: torch.Tensor, pos
     )
     
     if finite_mask.sum() < 6:  # Need at least 6 points for PnP
-        print(f"[pose_eval] Insufficient finite points: {finite_mask.sum()}/6")
+        # print(f"[pose_eval] Insufficient finite points: {finite_mask.sum()}/6")
         return float('nan'), float('nan'), None
     
     # Apply finite mask first
@@ -192,7 +189,7 @@ def pose_eval(pts3d_pred: torch.Tensor, conf: torch.Tensor, K: torch.Tensor, pos
     high_conf_mask = finite_conf >= conf_median
     
     if high_conf_mask.sum() < 6:  # Need at least 6 points for PnP
-        print(f"[pose_eval] Insufficient high-conf points: {high_conf_mask.sum()}/6 (median conf: {conf_median:.4f})")
+        # print(f"[pose_eval] Insufficient high-conf points: {high_conf_mask.sum()}/6 (median conf: {conf_median:.4f})")
         return float('nan'), float('nan'), None
     
     # Select high confidence points
@@ -225,7 +222,7 @@ def pose_eval(pts3d_pred: torch.Tensor, conf: torch.Tensor, K: torch.Tensor, pos
         
         if not success or inliers is None or len(inliers) < 4:  # Reduced from 6 to 4 (minimum for PnP)
             inlier_count = len(inliers) if inliers is not None else 0
-            print(f"[pose_eval] PnP RANSAC failed: success={success}, inliers={inlier_count}/4")
+            # print(f"[pose_eval] PnP RANSAC failed: success={success}, inliers={inlier_count}/4")
             return float('nan'), float('nan'), None
         
         # Convert rotation vector to rotation matrix
@@ -370,7 +367,7 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
                     if "K" not in val_batch or "query_pose" not in val_batch:
                         continue
                     K_cpu = val_batch["K"][idx].cpu()
-                    print("[val] K_scaled:\n", K_cpu.numpy())
+                    # print("[val] K_scaled:\n", K_cpu.numpy())
                     pose_gt = val_batch["query_pose"][idx]
                     if isinstance(pose_gt, torch.Tensor):
                         pose_gt = pose_gt.cpu().numpy()
@@ -382,19 +379,19 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
                     xyz_gt_rs = F.interpolate(xyz_gt_full.unsqueeze(0), size=(pts3d_cpu.shape[0], pts3d_cpu.shape[1]), mode="bilinear", align_corners=False).squeeze(0).permute(1, 2, 0)
                     xyz_gt_cpu = xyz_gt_rs.detach().cpu()
                     # --- Debug: compare predicted vs GT xyz ranges ---
-                    print("pred xyz [min,max,z+]:", pts3d_cpu.min().item(),
-                          pts3d_cpu.max().item(), pts3d_cpu[..., 2].min().item())
-                    print("gt xyz   [min,max,z+]:", xyz_gt_cpu.min().item(),
-                          xyz_gt_cpu.max().item(), xyz_gt_cpu[..., 2].min().item())
+                    # print("pred xyz [min,max,z+]:", pts3d_cpu.min().item(),
+                        #   pts3d_cpu.max().item(), pts3d_cpu[..., 2].min().item())
+                    # print("gt xyz   [min,max,z+]:", xyz_gt_cpu.min().item(),
+                        #   xyz_gt_cpu.max().item(), xyz_gt_cpu[..., 2].min().item())
                     ones_conf = torch.ones((xyz_gt_cpu.shape[0], xyz_gt_cpu.shape[1]), dtype=torch.float32)
                     t_err_gt, r_err_gt, pose_gtxyz = pose_eval(xyz_gt_cpu, ones_conf, K_cpu, pose_gt)
 
                     # Print results
                     np.set_printoptions(precision=4, suppress=True)
-                    print("[val] GT pose (world→cam):\n", pose_gt)
-                    print("[val] Pred pose (world→cam):\n", pose_pred)
-                    print("[val] PnP(pred)  trans_err={:.4f} m, rot_err={:.2f}°".format(t_err, r_err))
-                    print("[val] PnP(GT xyz) trans_err={:.4f} m, rot_err={:.2f}°".format(t_err_gt, r_err_gt))
+                    # print("[val] GT pose (world→cam):\n", pose_gt)
+                    # print("[val] Pred pose (world→cam):\n", pose_pred)
+                    # print("[val] PnP(pred)  trans_err={:.4f} m, rot_err={:.2f}°".format(t_err, r_err))
+                    # print("[val] PnP(GT xyz) trans_err={:.4f} m, rot_err={:.2f}°".format(t_err_gt, r_err_gt))
 
                     # ---- Save visualisations once ----
                     if not saved_viz:
@@ -450,7 +447,7 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
                             mx_c = mn_c + 1e-6
                         conf_vis = (conf_np - mn_c) / (mx_c - mn_c)
                         # Optional: print stats once
-                        print(f"[val] conf range: {mn_c:.4f} – {mx_c:.4f}")
+                        # print(f"[val] conf range: {mn_c:.4f} – {mx_c:.4f}")
                         plt.figure(figsize=(4, 4), dpi=200)
                         plt.imshow(conf_vis, cmap="viridis")
                         plt.colorbar(label="Pred confidence")
@@ -480,7 +477,12 @@ def train_one_epoch(model: SCRegNet, loader: DataLoader, optimizer, scheduler, s
             if was_training:
                 model.train()
 
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        # Update progress bar postfix with loss and, if available, validation PnP(pred) errors
+        postfix = {"loss": f"{loss.item():.4f}"}
+        if not math.isnan(last_trans_err):
+            postfix["t_err(m)"] = f"{last_trans_err:.3f}"
+            postfix["r_err(°)"] = f"{last_rot_err:.2f}"
+        pbar.set_postfix(**postfix)
 
         # periodic checkpoint (every 10% progress) or last batch
         # if ((batch_idx + 1) % interval_steps == 0) or (batch_idx + 1 == len(loader)):
@@ -585,7 +587,25 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
     os.makedirs(out_dir, exist_ok=True)
     log_path = Path(out_dir) / "train_log.txt"
 
-    writer = SummaryWriter(log_dir or (Path(out_dir) / "tb"))
+    # Build TensorBoard log directory with key init params
+    tb_suffix = f"tb_bs{batch_size}_fe{int(freeze_encoder)}_fd{int(freeze_decoder)}_fm{int(freeze_mixer)}_fh{int(freeze_head)}"
+    tb_dir = Path(log_dir) / tb_suffix if log_dir else (Path(out_dir) / tb_suffix)
+    writer = SummaryWriter(tb_dir)
+    # Record a human-readable summary of important hyper-parameters
+    hparams_txt = (
+        f"batch_size: {batch_size}\n"
+        f"epochs: {epochs}\n"
+        f"val_interval: {val_interval}\n"
+        f"freeze_encoder: {freeze_encoder}\n"
+        f"freeze_decoder: {freeze_decoder}\n"
+        f"freeze_mixer: {freeze_mixer}\n"
+        f"freeze_head: {freeze_head}\n"
+        f"pretrained: {ckpt_path}\n"
+        f"resume: {resume}\n"
+        f"out_dir: {out_dir}\n"
+        f"device: {device}"
+    )
+    writer.add_text("hparams/summary", hparams_txt, global_step=0)
 
     global_step = start_epoch * steps_per_epoch
     last_trans_err = float('nan')

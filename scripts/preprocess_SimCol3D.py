@@ -276,8 +276,7 @@ def generate_world_coords(debug: bool = False) -> None:
     fx, cx = 227.6, 227.6
     fy, cy = 237.5, 237.5
 
-    # variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
-    variants = ["SyntheticColon_I", "SyntheticColon_II"]
+    variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
     subsets = ["database", "query"]
 
     for colon_name in variants:
