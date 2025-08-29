@@ -552,7 +552,7 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
     optimizer = build_optimizer(trainable_params)
     steps_per_epoch = len(loader)
     total_steps = epochs * steps_per_epoch
-    scheduler = build_scheduler(optimizer, warmup_steps=30, total_steps=total_steps)
+    scheduler = build_scheduler(optimizer, warmup_steps=200, total_steps=total_steps)
     scaler = GradScaler()
 
     # --- Resume from checkpoint (our own saved .pth) ---
