@@ -30,8 +30,8 @@ from .utils import create_normalized_uv_grid_torch, phi_encode_xyz_torch, comput
 # φ-encoding helper (vectorised torch) – matches PointEmbed 38-D scheme
 # (Deprecated: now regress XYZ directly; kept for reference)
 # -----------------------------------------------------------------------------
-F1_DEFAULT = 31.4159
-GAMMA_DEFAULT = 2.884031503126606
+F1_DEFAULT = 125.6637
+GAMMA_DEFAULT = 2.1867
 F_HARMONICS = 6  # ⇒ 38-D (2 + 3*F*2)
 
 
@@ -523,11 +523,11 @@ def run_train(data_root: str | Path = "data/processed/SimCol3D", epochs: int = 1
         out_dir = out_dir / name
     os.makedirs(out_dir, exist_ok=True)
 
-    ds = SimCol3DDataset(top_k=1, n_samples=256, variants=("SyntheticColon_I", "SyntheticColon_II"))
+    ds = SimCol3DDataset(top_k=1, n_samples=1024, variants=("SyntheticColon_I", "SyntheticColon_II"))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True, collate_fn=simcol3d_collate_fn)
 
     # Validation dataset from SyntheticColon_III
-    val_ds = SimCol3DDataset(top_k=1, n_samples=256, variants=("SyntheticColon_III",))
+    val_ds = SimCol3DDataset(top_k=1, n_samples=1024, variants=("SyntheticColon_III",))
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True, collate_fn=simcol3d_collate_fn)
 
     # Create model and optionally load pretrained weights

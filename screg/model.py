@@ -50,8 +50,8 @@ class PointEmbed(nn.Module):
 
     def __init__(
         self,
-        f1: float = 31.4159,
-        gamma: float = 2.884031503126606,
+        f1: float = 125.6637,
+        gamma: float = 2.1867,
         F: int = 6,
         embed_dim: int = 256,
     ) -> None:

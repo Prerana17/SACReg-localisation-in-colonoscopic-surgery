@@ -88,8 +88,8 @@ def create_normalized_uv_grid_numpy(H: int, W: int) -> np.ndarray:
     return np.stack([u_grid, v_grid], axis=0).astype(np.float32)
 
 
-def compute_phi_frequencies(f1: float = 31.4159, 
-                           gamma: float = 2.884031503126606, 
+def compute_phi_frequencies(f1: float = 125.6637, 
+                           gamma: float = 2.1867, 
                            F: int = 6) -> np.ndarray:
     """计算φ编码的谐波频率
     

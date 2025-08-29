@@ -182,7 +182,7 @@ class SimCol3DDataset(BasePairDataset):
     def __init__(
         self,
         top_k: int = 50,
-        n_samples: int = 256,
+        n_samples: int = 1024,
         variants: Sequence[str] = ("SyntheticColon_I", "SyntheticColon_II"),
         rng: Optional[random.Random] = None,
     ) -> None:
@@ -226,7 +226,7 @@ class SimCol3DDataset(BasePairDataset):
 class _Phi38Encoder:
     """统一的φ-编码实现 (NumPy版本)"""
 
-    def __init__(self, f1: float = 31.4159, gamma: float = 2.884031503126606, F: int = 6):
+    def __init__(self, f1: float = 125.6637, gamma: float = 2.1867, F: int = 6):
         # 使用统一的频率计算函数
         self.frequencies = compute_phi_frequencies(f1, gamma, F)
 
