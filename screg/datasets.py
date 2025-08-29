@@ -75,8 +75,8 @@ class BasePairDataset(Dataset):
         vals = np.fromstring(pose_path.read_text(), sep=" ", dtype=np.float32)
         if vals.size != 7:
             raise ValueError(f"Unexpected pose format: {pose_path}")
+        # Positions are already in right-handed world coords (cm) → convert to metres
         t = vals[:3] * 0.01  # cm→m
-        t[1] *= -1.0
         q = vals[3:]
         Rm = R.from_quat(q).as_matrix().astype(np.float32)
         pose = np.eye(4, dtype=np.float32)

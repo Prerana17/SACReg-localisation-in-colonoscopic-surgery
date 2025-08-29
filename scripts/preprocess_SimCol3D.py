@@ -276,7 +276,8 @@ def generate_world_coords(debug: bool = False) -> None:
     fx, cx = 227.6, 227.6
     fy, cy = 237.5, 237.5
 
-    variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
+    # variants = ["SyntheticColon_I", "SyntheticColon_II", "SyntheticColon_III"]
+    variants = ["SyntheticColon_I", "SyntheticColon_II"]
     subsets = ["database", "query"]
 
     for colon_name in variants:
@@ -335,9 +336,9 @@ def generate_world_coords(debug: bool = False) -> None:
                     Pi[:3, 3] = t_cm.astype(np.float32)
 
                     # Left-handed to right-handed conversion via TM @ Pi @ TM
-                    TM = np.eye(4, dtype=np.float32)
-                    TM[1, 1] = -1.0
-                    Pi = TM @ Pi @ TM
+                    # TM = np.eye(4, dtype=np.float32)
+                    # TM[1, 1] = -1.0
+                    # Pi = TM @ Pi @ TM
 
                     rot_gt = Pi[:3, :3]  # (3,3)
                     tr_gt = Pi[:3, 3:4]  # (3,1), in cm
@@ -348,7 +349,7 @@ def generate_world_coords(debug: bool = False) -> None:
                     # Reshape to (H,W,3) and convert to meters only when saving
                     xyz_world_cm = cloud_world_cm.transpose(0, 2, 1).reshape(h, w, 3)
                     # Right-handed conversion: flip y-axis
-                    xyz_world_cm[..., 1] *= -1.0
+                    # xyz_world_cm[..., 1] *= -1.0
                     xyz_world_m = xyz_world_cm / 100.0
 
                     np.save(xyz_out, xyz_world_m)
@@ -521,6 +522,7 @@ def main(steps: List[str] | None = None, debug: bool = False) -> None:
         "parse_rename": lambda: parse_and_rename(debug=debug),
         "embed": lambda: generate_embeddings(debug=debug),
         "pairs": lambda: create_pairs(debug=debug),
+        "generate_world_coords": lambda: generate_world_coords(debug=debug),
     }
 
     if steps is None:
