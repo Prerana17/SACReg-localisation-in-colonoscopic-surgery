@@ -1,0 +1,6 @@
+[submodule "croco"]
+	path = croco
+	url = git@github.com:naver/croco.git
+[submodule "dust3r"]
+	path = dust3r
+	url = git@github.com:naver/dust3r.git

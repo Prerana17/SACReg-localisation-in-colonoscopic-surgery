@@ -1,0 +1,7 @@
+.venv
+__pycache__
+weight
+models
+dust3r
+croco
+data
